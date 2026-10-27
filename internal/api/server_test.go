@@ -226,3 +226,17 @@ func TestImportKeysRejectsUnknownAndBadJSON(t *testing.T) {
 		t.Fatalf("expected admin auth, got %d", code)
 	}
 }
+
+func TestExportKeys(t *testing.T) {
+	ts, _, cfg, _ := newTestServer(t)
+	code, body, hdr := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.AdminToken, "")
+	if code != 200 || !strings.Contains(body, `"modelscope"`) || !strings.Contains(body, `"keys"`) {
+		t.Fatalf("export %d %s", code, body)
+	}
+	if !strings.Contains(hdr.Get("Content-Disposition"), "quota-line.json") {
+		t.Fatalf("content-disposition %q", hdr.Get("Content-Disposition"))
+	}
+	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.ClientToken, ""); code != 401 {
+		t.Fatalf("expected admin auth, got %d", code)
+	}
+}

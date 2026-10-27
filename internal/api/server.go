@@ -651,6 +651,26 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "providers": s.router.Status()})
 			return http.StatusOK
 		}
+	case "/admin/api/export-keys":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 GET", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		raw, err := os.ReadFile(s.cfg.Paths.Keys)
+		if err != nil {
+			if os.IsNotExist(err) {
+				raw = []byte("{}\n")
+			} else {
+				writeError(w, http.StatusInternalServerError, "读取 key 配置失败: "+err.Error(), "gateway_error", "export_read_failed", requestID)
+				return http.StatusInternalServerError
+			}
+		}
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		w.Header().Set("content-disposition", `attachment; filename="quota-line.json"`)
+		w.Header().Set("cache-control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+		return http.StatusOK
 	case "/admin/api/import-keys":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)
