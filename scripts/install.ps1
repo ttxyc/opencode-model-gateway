@@ -5,11 +5,26 @@ param(
   [string]$ClientTokenFile = "",
   [string]$AdminToken = "",
   [string]$ManifestUrl = "https://github.com/ttxyc/opencode-model-gateway/releases/latest/download/latest.json",
+  [string]$UpdateProxy = "",
+  [switch]$NoUpdateProxy,
   [switch]$SkipWSL,
   [switch]$SkipFirewall
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
+if (-not $UpdateProxy -and -not $NoUpdateProxy) {
+  try {
+    $ie = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction SilentlyContinue
+    if ($ie.ProxyEnable -eq 1 -and $ie.ProxyServer) {
+      $UpdateProxy = [string]$ie.ProxyServer
+      if ($UpdateProxy -match "=") {
+        $m = [regex]::Match($UpdateProxy, "(?:https|http)=([^;]+)")
+        if ($m.Success) { $UpdateProxy = $m.Groups[1].Value }
+      }
+      if ($UpdateProxy -and $UpdateProxy -notmatch "^https?://") { $UpdateProxy = "http://" + $UpdateProxy }
+    }
+  } catch {}
+}
 function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 function New-RandomToken { param($prefix) $b = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); return $prefix + [BitConverter]::ToString($b).Replace("-","").ToLower() }
 
@@ -97,6 +112,18 @@ try {
   $h = Invoke-RestMethod -Uri "http://127.0.0.1:8788/healthz" -TimeoutSec 10
   if (-not $h.ok) { Fail "health check failed" }
 } catch { Fail "health check failed: $($_.Exception.Message)" }
+
+if ($UpdateProxy) {
+  $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\opencode-model-gateway"
+  $noProxy = "127.0.0.1,localhost,modelscope.cn,api-inference.modelscope.cn,api.cline.bot,api.atria-asi.ai,developer.amd.com.cn,api.deepseek.com"
+  New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value @("HTTPS_PROXY=$UpdateProxy","HTTP_PROXY=$UpdateProxy","NO_PROXY=$noProxy") -Force | Out-Null
+  Restart-Service -Name "opencode-model-gateway" -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 3
+} elseif ($NoUpdateProxy) {
+  Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\opencode-model-gateway" -Name Environment -Force -ErrorAction SilentlyContinue
+  Restart-Service -Name "opencode-model-gateway" -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 3
+}
 
 if (-not $SkipFirewall) {
   try {

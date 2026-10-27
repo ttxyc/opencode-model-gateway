@@ -20,7 +20,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.0.3" \
+  -ldflags "-s -w -X main.version=1.0.4" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 
@@ -61,6 +61,8 @@ cd <解压目录>\scripts
 
 - `-QuotaLinePath`：从现有 `quota-line.json` 导入 key；不传则交互输入
 - `-ClientTokenFile`：复用旧网关 token（迁移时避免所有工具改 token）
+- `-UpdateProxy`：只给服务设置 GitHub 更新用的代理（如 `http://127.0.0.1:10808`）；不填会自动读取当前用户 Internet 代理
+- `-NoUpdateProxy`：不设置更新代理（GitHub 可直连时用）
 - `-SkipWSL`：不配置当前 Ubuntu 的 hosts 别名
 - `-SkipFirewall`：不创建 WSL 网段防火墙规则
 
@@ -135,7 +137,7 @@ http://opencode-gateway.local:8788/...
 - 校验 `latest.json` 的 Ed25519 签名与 exe SHA256
 - 停服务 → 替换 exe → 启动 → `/healthz`；失败自动回滚旧 exe
 - 签名私钥在 GitHub Actions Secret `GATEWAY_SIGNING_KEY`（值就是本机 `gateway-signing.key` 的内容；不要入库/贴聊天）；公钥在 `publickey.txt`
-- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.0.3`；CI 会构建、签名并发布 Release
+- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.0.4`；CI 会构建、签名并发布 Release
 
 ## 迁移当前 WSL 网关
 
