@@ -656,15 +656,23 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 			writeError(w, http.StatusMethodNotAllowed, "只支持 GET", "invalid_request_error", "method_not_allowed", requestID)
 			return http.StatusMethodNotAllowed
 		}
-		raw, err := os.ReadFile(s.cfg.Paths.Keys)
-		if err != nil {
-			if os.IsNotExist(err) {
-				raw = []byte("{}\n")
-			} else {
-				writeError(w, http.StatusInternalServerError, "读取 key 配置失败: "+err.Error(), "gateway_error", "export_read_failed", requestID)
-				return http.StatusInternalServerError
+		exported := map[string]any{}
+		for provider := range s.cfg.Providers {
+			keys := s.router.Keys(provider)
+			if len(keys) == 0 {
+				continue
+			}
+			exported[provider] = map[string]any{
+				"label": s.cfg.Providers[provider].Label,
+				"keys":  keys,
 			}
 		}
+		raw, err := json.MarshalIndent(exported, "", "  ")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "生成 key 配置失败: "+err.Error(), "gateway_error", "export_marshal_failed", requestID)
+			return http.StatusInternalServerError
+		}
+		raw = append(raw, '\n')
 		w.Header().Set("content-type", "application/json; charset=utf-8")
 		w.Header().Set("content-disposition", `attachment; filename="quota-line.json"`)
 		w.Header().Set("cache-control", "no-store")

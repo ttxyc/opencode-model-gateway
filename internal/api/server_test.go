@@ -229,9 +229,19 @@ func TestImportKeysRejectsUnknownAndBadJSON(t *testing.T) {
 
 func TestExportKeys(t *testing.T) {
 	ts, _, cfg, _ := newTestServer(t)
+	// Add a legacy provider that is not routed by the gateway; export must omit it.
+	raw, _ := os.ReadFile(cfg.Paths.Keys)
+	var doc map[string]any
+	_ = json.Unmarshal(raw, &doc)
+	doc["inkstone"] = map[string]any{"token": "legacy-secret-token", "label": "端砚"}
+	b, _ := json.Marshal(doc)
+	_ = os.WriteFile(cfg.Paths.Keys, b, 0o600)
 	code, body, hdr := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.AdminToken, "")
 	if code != 200 || !strings.Contains(body, `"modelscope"`) || !strings.Contains(body, `"keys"`) {
 		t.Fatalf("export %d %s", code, body)
+	}
+	if strings.Contains(body, "inkstone") || strings.Contains(body, "legacy-secret-token") {
+		t.Fatalf("export leaked non-routed provider: %s", body)
 	}
 	if !strings.Contains(hdr.Get("Content-Disposition"), "quota-line.json") {
 		t.Fatalf("content-disposition %q", hdr.Get("Content-Disposition"))
