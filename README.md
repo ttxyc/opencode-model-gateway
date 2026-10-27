@@ -20,7 +20,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.0.4" \
+  -ldflags "-s -w -X main.version=1.0.5" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 
@@ -137,7 +137,7 @@ http://opencode-gateway.local:8788/...
 - 校验 `latest.json` 的 Ed25519 签名与 exe SHA256
 - 停服务 → 替换 exe → 启动 → `/healthz`；失败自动回滚旧 exe
 - 签名私钥在 GitHub Actions Secret `GATEWAY_SIGNING_KEY`（值就是本机 `gateway-signing.key` 的内容；不要入库/贴聊天）；公钥在 `publickey.txt`
-- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.0.4`；CI 会构建、签名并发布 Release
+- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.0.5`；CI 会构建、签名并发布 Release
 
 ## 迁移当前 WSL 网关
 

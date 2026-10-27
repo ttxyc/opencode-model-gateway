@@ -29,18 +29,19 @@ const (
 )
 
 var (
-	insufficientRe = regexp.MustCompile(`insufficient balance|魔粒不足|余额不足|quota exceeded|insufficient_quota`)
+	insufficientRe = regexp.MustCompile(`insufficient balance|魔粒不足|余额不足`)
 	keyFailureRe   = regexp.MustCompile(`insufficient|balance|magicube|credit|quota|rate.?limit|too many requests|free limit|limit reached|余额|欠费|魔粒|额度|限流`)
 	retryAfterRe   = regexp.MustCompile(`(?i)try again in\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?`)
 )
 
 type KeyState struct {
-	Balance      *float64  `json:"balance,omitempty"`
-	BalanceAt    time.Time `json:"balanceAt,omitempty"`
-	BalanceError string    `json:"balanceError,omitempty"`
-	CooldownTill time.Time `json:"cooldownUntil,omitempty"`
-	LastError    string    `json:"lastError,omitempty"`
-	UserID       string    `json:"-"`
+	Balance         *float64  `json:"balance,omitempty"`
+	BalanceAt       time.Time `json:"balanceAt,omitempty"`
+	BalanceFromDisk bool      `json:"-"`
+	BalanceError    string    `json:"balanceError,omitempty"`
+	CooldownTill    time.Time `json:"cooldownUntil,omitempty"`
+	LastError       string    `json:"lastError,omitempty"`
+	UserID          string    `json:"-"`
 }
 
 type msState struct {
@@ -58,6 +59,7 @@ type Router struct {
 	client *http.Client
 
 	mu       sync.Mutex
+	initMu   sync.Mutex
 	keys     map[string][]string
 	keysMod  time.Time
 	keyCheck time.Time
@@ -81,12 +83,13 @@ type KeyStatus struct {
 	BalanceAt    *time.Time `json:"balanceAt,omitempty"`
 	BalanceError string     `json:"balanceError,omitempty"`
 	CooldownTill *time.Time `json:"cooldownUntil,omitempty"`
+	BalanceStale bool       `json:"balanceStale,omitempty"`
 	Exhausted    bool       `json:"exhausted"`
 	LastError    string     `json:"lastError,omitempty"`
 }
 
 func New(cfg *config.Config, log *logx.Logger) *Router {
-	return &Router{
+	r := &Router{
 		cfg: cfg,
 		log: log,
 		client: &http.Client{
@@ -95,6 +98,76 @@ func New(cfg *config.Config, log *logx.Logger) *Router {
 		keys:   map[string][]string{},
 		states: map[string]map[string]*KeyState{},
 		ms:     msState{Exhausted: map[string]bool{}},
+	}
+	r.loadPersistedState()
+	return r
+}
+
+// loadPersistedState restores the last-known balances and Cline/Atria cooldowns
+// written by the previous process, matching the old Node key-router behavior.
+func (r *Router) loadPersistedState() {
+	raw, err := os.ReadFile(r.cfg.Paths.State)
+	if err != nil {
+		return
+	}
+	type persistedKey struct {
+		KeyHash      string     `json:"keyHash"`
+		Balance      *float64   `json:"balance"`
+		BalanceAt    *time.Time `json:"balanceAt"`
+		CooldownTill *time.Time `json:"cooldownUntil"`
+		LastError    string     `json:"lastError"`
+	}
+	type persistedProvider struct {
+		ID   string         `json:"id"`
+		Keys []persistedKey `json:"keys"`
+	}
+	var top struct {
+		Providers json.RawMessage `json:"providers"`
+	}
+	if json.Unmarshal(raw, &top) != nil || len(top.Providers) == 0 {
+		return
+	}
+	var providers []persistedProvider
+	if json.Unmarshal(top.Providers, &providers) != nil {
+		var byID map[string]persistedProvider
+		if json.Unmarshal(top.Providers, &byID) != nil {
+			return
+		}
+		for id, p := range byID {
+			if p.ID == "" {
+				p.ID = id
+			}
+			providers = append(providers, p)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range providers {
+		keys := r.loadKeysLocked(p.ID)
+		if len(keys) == 0 {
+			continue
+		}
+		kind := r.Kind(p.ID)
+		for _, pk := range p.Keys {
+			key := findKeyByHash(keys, pk.KeyHash)
+			if key == "" {
+				continue
+			}
+			st := r.stateLocked(p.ID, key)
+			if pk.Balance != nil {
+				st.Balance = pk.Balance
+				st.BalanceFromDisk = true
+				if pk.BalanceAt != nil {
+					st.BalanceAt = *pk.BalanceAt
+				}
+			}
+			if kind != KindModelScope && pk.CooldownTill != nil {
+				st.CooldownTill = *pk.CooldownTill
+			}
+			if pk.LastError != "" {
+				st.LastError = pk.LastError
+			}
+		}
 	}
 }
 
@@ -234,6 +307,7 @@ func (r *Router) RefreshProvider(ctx context.Context, provider string, force boo
 		} else {
 			s.Balance = res.balance
 			s.BalanceError = ""
+			s.BalanceFromDisk = false
 		}
 		r.mu.Unlock()
 	}
@@ -386,63 +460,184 @@ func (r *Router) Pick(ctx context.Context, provider string, tried map[string]boo
 	return r.pickPriorityLocked(provider, available, tried), nil
 }
 
+var errMSExhausted = errors.New("modelscope all keys exhausted")
+
 func (r *Router) ensureMS(ctx context.Context) (string, error) {
 	r.mu.Lock()
+	initialized := r.ms.Initialized
+	r.mu.Unlock()
+	if !initialized {
+		key, err := r.initMS(ctx)
+		if err != nil {
+			return "", err
+		}
+		if key != "" {
+			return key, nil
+		}
+		return r.probeMSRecovery(ctx)
+	}
+
+	r.mu.Lock()
 	keys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	if len(keys) == 0 {
+		r.mu.Unlock()
+		return "", errors.New("modelscope has no keys")
+	}
+	current := r.ms.Current
+	if current != "" && !contains(keys, current) {
+		r.mu.Unlock()
+		picked := r.reselectAfterExhaust(ctx, current, "当前 key 已从配置移除")
+		if picked == "" {
+			return "", errMSExhausted
+		}
+		return picked, nil
+	}
+	if r.ms.AllExhausted || current == "" {
+		r.mu.Unlock()
+		return r.probeMSRecovery(ctx)
+	}
+	if r.ms.Exhausted[Hash(current)] {
+		r.mu.Unlock()
+		picked := r.reselectAfterExhaust(ctx, current, "当前 key 已被判定魔粒不足")
+		if picked == "" {
+			return "", errMSExhausted
+		}
+		return picked, nil
+	}
+	state := r.stateLocked(KindModelScope, current)
+	balance := state.Balance
+	r.mu.Unlock()
+	if balance != nil && *balance == 0 {
+		picked := r.reselectAfterExhaust(ctx, current, "实时余额为 0")
+		if picked == "" {
+			return "", errMSExhausted
+		}
+		return picked, nil
+	}
+	return current, nil
+}
+
+func (r *Router) initMS(ctx context.Context) (string, error) {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	r.mu.Lock()
+	if r.ms.Initialized {
+		r.mu.Unlock()
+		return r.ensureMS(ctx)
+	}
+	keys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	exclude := copyExcluded(r.ms.Exhausted)
 	r.mu.Unlock()
 	if len(keys) == 0 {
 		return "", errors.New("modelscope has no keys")
 	}
-	if !r.balanceKnown(KindModelScope, keys) {
-		r.RefreshProvider(ctx, KindModelScope, true)
-	}
-	r.mu.Lock()
-	if !r.ms.Initialized {
-		r.ms.Initialized = true
-	}
-	current := r.ms.Current
-	if current != "" && !contains(keys, current) {
-		r.ms.Current = ""
-		current = ""
-	}
-	if current != "" && !r.ms.Exhausted[Hash(current)] {
-		s := r.stateLocked(KindModelScope, current)
-		if s.Balance != nil && *s.Balance > 0 {
-			r.mu.Unlock()
-			return current, nil
-		}
-	}
-	if r.ms.AllExhausted {
-		r.ms.LastProbe = time.Now()
-	}
-	r.mu.Unlock()
-
-	r.RefreshProvider(ctx, KindModelScope, true)
+	r.refreshBalancesWithRetry(ctx, KindModelScope, exclude)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.ms.AllExhausted {
-		for _, k := range keys {
-			s := r.stateLocked(KindModelScope, k)
-			if s.Balance != nil && *s.Balance > 0 {
-				delete(r.ms.Exhausted, Hash(k))
-			}
-		}
-	}
-	picked := r.bestMSLocked(keys, r.ms.Exhausted)
+	r.ms.Initialized = true
+	keys = append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	picked := r.bestMSLocked(keys, r.ms.Exhausted, true)
 	if picked == "" {
-		if r.ms.AllExhausted && time.Since(r.ms.LastProbe) < 5*time.Second {
-			return "", errors.New("modelscope all keys exhausted")
-		}
 		r.ms.AllExhausted = true
 		r.ms.Current = ""
-		r.ms.LastProbe = time.Now()
-		return "", errors.New("modelscope all keys exhausted")
+		r.writeStateLocked()
+		return "", nil
 	}
 	r.ms.AllExhausted = false
 	r.ms.Current = picked
 	r.ms.Since = time.Now()
 	r.writeStateLocked()
 	return picked, nil
+}
+
+func (r *Router) probeMSRecovery(ctx context.Context) (string, error) {
+	r.mu.Lock()
+	if time.Since(r.ms.LastProbe) < 5*time.Second {
+		r.mu.Unlock()
+		return "", errMSExhausted
+	}
+	r.ms.LastProbe = time.Now()
+	r.mu.Unlock()
+	r.RefreshProvider(ctx, KindModelScope, true)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	keys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	picked := r.bestMSLocked(keys, map[string]bool{}, false)
+	if picked == "" {
+		r.ms.AllExhausted = true
+		r.ms.Current = ""
+		r.writeStateLocked()
+		return "", errMSExhausted
+	}
+	delete(r.ms.Exhausted, Hash(picked))
+	r.ms.AllExhausted = false
+	r.ms.Current = picked
+	r.ms.Since = time.Now()
+	r.writeStateLocked()
+	return picked, nil
+}
+
+func (r *Router) reselectAfterExhaust(ctx context.Context, key, reason string) string {
+	r.mu.Lock()
+	st := r.stateLocked(KindModelScope, key)
+	if reason != "" {
+		st.LastError = reason
+	}
+	if IsInsufficient(reason) {
+		zero := float64(0)
+		st.Balance = &zero
+		st.BalanceAt = time.Now()
+		st.BalanceError = ""
+	}
+	r.ms.Exhausted[Hash(key)] = true
+	exclude := copyExcluded(r.ms.Exhausted)
+	r.mu.Unlock()
+
+	r.refreshBalancesWithRetry(ctx, KindModelScope, exclude)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ms.Current != "" && r.ms.Current != key {
+		return r.ms.Current
+	}
+	keys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	picked := r.bestMSLocked(keys, r.ms.Exhausted, true)
+	if picked == "" {
+		r.ms.AllExhausted = true
+		r.ms.Current = ""
+	} else {
+		r.ms.AllExhausted = false
+		r.ms.Current = picked
+		r.ms.Since = time.Now()
+	}
+	r.writeStateLocked()
+	return r.ms.Current
+}
+
+func (r *Router) switchAfterTransientFailure(ctx context.Context, key string) string {
+	r.RefreshProvider(ctx, KindModelScope, true)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ms.Current != "" && r.ms.Current != key {
+		return r.ms.Current
+	}
+	keys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+	exclude := copyExcluded(r.ms.Exhausted)
+	exclude[Hash(key)] = true
+	picked := r.bestMSLocked(keys, exclude, true)
+	if picked == "" {
+		if r.ms.Current == "" {
+			r.ms.Current = key
+		}
+		r.ms.AllExhausted = false
+		r.writeStateLocked()
+		return r.ms.Current
+	}
+	r.ms.AllExhausted = false
+	r.ms.Current = picked
+	r.ms.Since = time.Now()
+	r.writeStateLocked()
+	return picked
 }
 
 func (r *Router) pickMS(ctx context.Context, tried map[string]bool) (string, error) {
@@ -459,7 +654,7 @@ func (r *Router) pickMS(ctx context.Context, tried map[string]bool) (string, err
 	for k := range tried {
 		exclude[Hash(k)] = true
 	}
-	picked := r.bestMSLocked(keys, exclude)
+	picked := r.bestMSLocked(keys, exclude, true)
 	r.mu.Unlock()
 	if picked == "" {
 		return "", errors.New("no available modelscope key")
@@ -467,28 +662,17 @@ func (r *Router) pickMS(ctx context.Context, tried map[string]bool) (string, err
 	return picked, nil
 }
 
-func (r *Router) balanceKnown(provider string, keys []string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, k := range keys {
-		if r.stateLocked(provider, k).Balance != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Router) bestMSLocked(keys []string, exclude map[string]bool) string {
+func (r *Router) bestMSLocked(keys []string, exclude map[string]bool, includeUnknown bool) string {
 	var best string
 	var bestBalance float64
 	var unknown string
 	for _, k := range keys {
-		if exclude[Hash(k)] {
+		if exclude != nil && exclude[Hash(k)] {
 			continue
 		}
 		s := r.stateLocked(KindModelScope, k)
 		if s.Balance == nil {
-			if unknown == "" {
+			if includeUnknown && unknown == "" {
 				unknown = k
 			}
 			continue
@@ -501,6 +685,46 @@ func (r *Router) bestMSLocked(keys []string, exclude map[string]bool) string {
 		return best
 	}
 	return unknown
+}
+
+func copyExcluded(src map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range src {
+		if v {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+func (r *Router) refreshBalancesWithRetry(ctx context.Context, provider string, exclude map[string]bool) {
+	r.RefreshProvider(ctx, provider, true)
+	keys := r.Keys(provider)
+	if len(keys) == 0 || r.hasKnownBalance(provider, keys, exclude) {
+		return
+	}
+	timer := time.NewTimer(800 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+	r.RefreshProvider(ctx, provider, true)
+}
+
+func (r *Router) hasKnownBalance(provider string, keys []string, exclude map[string]bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, k := range keys {
+		if exclude != nil && exclude[Hash(k)] {
+			continue
+		}
+		if r.stateLocked(provider, k).Balance != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) pickClineLocked(provider string, keys []string, exclude map[string]bool) string {
@@ -564,48 +788,11 @@ func (r *Router) pickPriorityLocked(provider string, keys []string, exclude map[
 
 func (r *Router) ReportFailure(ctx context.Context, provider, key string, status int, reason string) error {
 	if r.Kind(provider) == KindModelScope {
-		r.mu.Lock()
-		s := r.stateLocked(provider, key)
-		s.LastError = reason
-		if status == http.StatusPaymentRequired || insufficientRe.MatchString(strings.ToLower(reason)) {
-			zero := float64(0)
-			s.Balance = &zero
-			s.BalanceAt = time.Now()
-			r.ms.Exhausted[Hash(key)] = true
-			if r.ms.Current == key {
-				r.ms.Current = ""
-			}
-		}
-		r.mu.Unlock()
-		r.RefreshProvider(ctx, provider, true)
-		r.mu.Lock()
-		keys := append([]string(nil), r.loadKeysLocked(provider)...)
-		exclude := map[string]bool{}
-		for k := range r.ms.Exhausted {
-			exclude[k] = true
-		}
-		if status != http.StatusPaymentRequired && !insufficientRe.MatchString(strings.ToLower(reason)) {
-			exclude[Hash(key)] = true
-		}
-		picked := r.bestMSLocked(keys, exclude)
-		if picked == "" && status != http.StatusPaymentRequired && !insufficientRe.MatchString(strings.ToLower(reason)) {
-			picked = r.bestMSLocked(keys, map[string]bool{Hash(key): true})
-		}
-		if picked == "" {
-			if status != http.StatusPaymentRequired && !insufficientRe.MatchString(strings.ToLower(reason)) {
-				r.ms.Current = key
-				r.ms.AllExhausted = false
-			} else {
-				r.ms.AllExhausted = true
-				r.ms.Current = ""
-			}
+		if IsInsufficient(reason) {
+			r.reselectAfterExhaust(ctx, key, reason)
 		} else {
-			r.ms.AllExhausted = false
-			r.ms.Current = picked
-			r.ms.Since = time.Now()
+			r.switchAfterTransientFailure(ctx, key)
 		}
-		r.writeStateLocked()
-		r.mu.Unlock()
 		return nil
 	}
 	if r.Kind(provider) == KindCline || r.Kind(provider) == KindAtria {
@@ -781,6 +968,7 @@ func (r *Router) statusLocked() []ProviderStatus {
 				KeyHash:      Hash(k),
 				Balance:      s.Balance,
 				BalanceError: s.BalanceError,
+				BalanceStale: s.BalanceFromDisk,
 				LastError:    s.LastError,
 				Exhausted:    r.ms.Exhausted[Hash(k)],
 			}
