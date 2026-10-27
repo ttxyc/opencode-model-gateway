@@ -17,6 +17,8 @@ jobs:
         with:
           go-version: "1.24"
           cache-dependency-path: go.sum
+      - name: Sync embedded installer assets
+        run: cp config.example.json publickey.txt opencode-gateway.vbs internal/installer/assets/ && cp scripts/install.ps1 scripts/install-wsl.ps1 internal/installer/assets/scripts/
       - name: Test
         run: go test ./...
       - name: Build Windows x64

@@ -7,6 +7,7 @@ param(
   [string]$ManifestUrl = "https://github.com/ttxyc/opencode-model-gateway/releases/latest/download/latest.json",
   [string]$UpdateProxy = "",
   [switch]$NoUpdateProxy,
+  [switch]$NoKeyPrompt,
   [switch]$SkipWSL,
   [switch]$SkipFirewall
 )
@@ -47,16 +48,28 @@ Copy-Item "$Root\config.example.json" "$DataHome\config\gateway.example.json" -F
 $vbs = (Get-Content "$Root\opencode-gateway.vbs" -Raw).Replace("@@HOME@@", $DataHome)
 [IO.File]::WriteAllText("$DataHome\opencode-gateway.vbs", $vbs, (New-Object Text.UTF8Encoding($false)))
 
-if (-not $ClientToken -and $ClientTokenFile) {
-  if (-not (Test-Path $ClientTokenFile)) { Fail "ClientTokenFile not found: $ClientTokenFile" }
+$existingCfg = $null
+if (Test-Path "$DataHome\config\gateway.json") {
+  try { $existingCfg = Get-Content "$DataHome\config\gateway.json" -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $existingCfg = $null }
+}
+if (-not $ClientToken -and $ClientTokenFile -and (Test-Path $ClientTokenFile)) {
   $ClientToken = (Get-Content $ClientTokenFile -Raw).Trim()
 }
+if (-not $ClientToken -and $existingCfg -and $existingCfg.token) { $ClientToken = [string]$existingCfg.token }
+if (-not $ClientToken -and (Test-Path "$DataHome\config\client.token")) {
+  $ClientToken = (Get-Content "$DataHome\config\client.token" -Raw).Trim()
+}
 if (-not $ClientToken) { $ClientToken = New-RandomToken "gw-" }
+
+if (-not $AdminToken -and $existingCfg -and $existingCfg.adminToken) { $AdminToken = [string]$existingCfg.adminToken }
+if (-not $AdminToken -and (Test-Path "$DataHome\config\admin.token")) {
+  $AdminToken = (Get-Content "$DataHome\config\admin.token" -Raw).Trim()
+}
 if (-not $AdminToken) { $AdminToken = New-RandomToken "adm-" }
 
 $pub = ""
 if (Test-Path "$Root\publickey.txt") { $pub = (Get-Content "$Root\publickey.txt" -Raw).Trim() }
-$cfg = Get-Content "$Root\config.example.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($existingCfg) { $cfg = $existingCfg } else { $cfg = Get-Content "$Root\config.example.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
 $cfg.token = $ClientToken
 $cfg.adminToken = $AdminToken
 if ($ManifestUrl) { $cfg.update.manifestUrl = $ManifestUrl }
@@ -67,9 +80,14 @@ $json = $cfg | ConvertTo-Json -Depth 20
 [IO.File]::WriteAllText("$DataHome\config\client.token", $ClientToken + "`n", (New-Object Text.UTF8Encoding($false)))
 [IO.File]::WriteAllText("$DataHome\config\admin.token", $AdminToken + "`n", (New-Object Text.UTF8Encoding($false)))
 
+$keysFile = "$DataHome\keys\quota-line.json"
 if ($QuotaLinePath) {
   if (-not (Test-Path $QuotaLinePath)) { Fail "QuotaLinePath not found: $QuotaLinePath" }
-  Copy-Item $QuotaLinePath "$DataHome\keys\quota-line.json" -Force
+  Copy-Item $QuotaLinePath $keysFile -Force
+} elseif (Test-Path $keysFile) {
+  Write-Host "Existing keys preserved: $keysFile"
+} elseif ($NoKeyPrompt) {
+  [IO.File]::WriteAllText($keysFile, "{}" + "`n", (New-Object Text.UTF8Encoding($false)))
 } else {
   $providers = @{}
   Write-Host "Enter keys; leave blank to skip. Multiple keys separated by comma."
@@ -80,8 +98,8 @@ if ($QuotaLinePath) {
       if ($keys.Count -gt 0) { $providers[$p] = @{ keys = $keys; label = $p } }
     }
   }
-  $keysJson = $providers | ConvertTo-Json -Depth 6
-  [IO.File]::WriteAllText("$DataHome\keys\quota-line.json", $keysJson, (New-Object Text.UTF8Encoding($false)))
+  if ($providers.Count -eq 0) { $keysJson = "{}" } else { $keysJson = $providers | ConvertTo-Json -Depth 6 }
+  [IO.File]::WriteAllText($keysFile, $keysJson, (New-Object Text.UTF8Encoding($false)))
 }
 
 # ACL: service files read-only to users; keys/state/config secrets only for SYSTEM/admins.

@@ -26,6 +26,16 @@ func RunService(home, version string) error {
 func Install(home, version string) error {
 	return errors.New("service installation is only supported on Windows")
 }
+func DefaultAction(home string) error {
+	fmt.Println("double-click installer is only supported on Windows")
+	return nil
+}
+func InstallEmbedded(home string) error {
+	return errors.New("embedded installer is only supported on Windows")
+}
+func ElevateInstall(home string) error {
+	return errors.New("embedded installer is only supported on Windows")
+}
 func Uninstall() error        { return errors.New("only supported on Windows") }
 func Start() error            { return errors.New("only supported on Windows") }
 func Stop() error             { return errors.New("only supported on Windows") }

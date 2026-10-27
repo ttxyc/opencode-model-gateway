@@ -17,18 +17,20 @@ var version = "0.1.0-dev"
 
 func main() {
 	var (
-		service = flag.Bool("service", false, "run as Windows service")
-		home    = flag.String("home", "", "data home directory")
-		install = flag.Bool("install", false, "install Windows service (admin)")
-		uninst  = flag.Bool("uninstall", false, "uninstall Windows service (admin)")
-		start   = flag.Bool("start", false, "start Windows service")
-		stop    = flag.Bool("stop", false, "stop Windows service")
-		status  = flag.Bool("status", false, "show Windows service status")
-		open    = flag.Bool("open-admin", false, "open the admin page")
-		apply   = flag.Bool("apply-update", false, "internal update helper")
-		newPath = flag.String("new", "", "new executable for --apply-update")
-		showVer = flag.Bool("version", false, "print version")
-		run     = flag.Bool("run", false, "run in console mode")
+		service   = flag.Bool("service", false, "run as Windows service")
+		home      = flag.String("home", "", "data home directory")
+		install   = flag.Bool("install", false, "register Windows service only (admin; used by installer)")
+		installE  = flag.Bool("install-elevated", false, "run embedded installer (internal, elevated)")
+		installUI = flag.Bool("install-ui", false, "run embedded installer (same as double-click)")
+		uninst    = flag.Bool("uninstall", false, "uninstall Windows service (admin)")
+		start     = flag.Bool("start", false, "start Windows service")
+		stop      = flag.Bool("stop", false, "stop Windows service")
+		status    = flag.Bool("status", false, "show Windows service status")
+		open      = flag.Bool("open-admin", false, "open the admin page")
+		apply     = flag.Bool("apply-update", false, "internal update helper")
+		newPath   = flag.String("new", "", "new executable for --apply-update")
+		showVer   = flag.Bool("version", false, "print version")
+		run       = flag.Bool("run", false, "run in console mode")
 	)
 	flag.Parse()
 	if *showVer {
@@ -50,6 +52,17 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("service installed:", config.ServiceName)
+	case *installE:
+		if err := platform.InstallEmbedded(h); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case *installUI:
+		if err := platform.DefaultAction(h); err != nil {
+			platform.ShowError("安装/打开管理页失败: " + err.Error())
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case *uninst:
 		if err := platform.Uninstall(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -92,8 +105,11 @@ func main() {
 	case *run:
 		runConsole(h)
 	default:
-		fmt.Fprintf(os.Stderr, "opencode-model-gateway %s\nUse --run for console, --install/--uninstall/--start/--stop/--status for service, --open-admin for UI, --version.\n", version)
-		os.Exit(2)
+		if err := platform.DefaultAction(h); err != nil {
+			platform.ShowError("安装/打开管理页失败: " + err.Error())
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 }
 

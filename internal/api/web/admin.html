@@ -20,7 +20,7 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
 .tag.ok{color:var(--ok);border-color:#1d5a40}.tag.bad{color:var(--bad);border-color:#5a2a2e}.tag.warn{color:var(--warn);border-color:#5a4720}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
-.muted{color:var(--muted)}.small{font-size:12px}.err{color:var(--bad);white-space:pre-wrap}.ok{color:var(--ok)}
+.muted{color:var(--muted)}.small{font-size:12px}.err{color:var(--bad);white-space:pre-wrap}#importMsg{white-space:pre-wrap}.ok{color:var(--ok)}
 .hidden{display:none}.banner{padding:9px 12px;border-radius:8px;background:#1b2333;border:1px solid #2b3a56;margin-bottom:12px}
 </style>
 </head>
@@ -61,6 +61,23 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
         <button class="primary" id="addBtn">校验并添加</button>
       </div>
       <div id="addMsg" class="small" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">导入 key 配置</div>
+          <div class="muted small">选择旧的 quota-line.json，或直接粘贴 JSON；默认合并追加，不覆盖已有 key</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input id="importFile" type="file" accept=".json,application/json" class="hidden">
+        <button class="primary" id="importPickBtn">选择 key 配置文件</button>
+        <label class="muted small"><input id="importOverwrite" type="checkbox"> 覆盖同平台已有 key</label>
+        <button id="importTextBtn">导入下方文本</button>
+      </div>
+      <textarea id="importText" placeholder='粘贴 quota-line.json 内容，例如 {"modelscope":{"keys":["ms-..."]}}' style="width:100%;min-height:96px;margin-top:10px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+      <div id="importMsg" class="small" style="margin-top:8px"></div>
     </div>
 
     <div id="providers" class="grid"></div>
@@ -180,6 +197,31 @@ $("loginBtn").onclick=async()=>{ state.token=$("token").value.trim(); localStora
 $("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("loginBtn").click();});
 $("refreshBtn").onclick=()=>load().catch(e=>alert(e.message));
 $("logoutBtn").onclick=()=>{localStorage.removeItem("gw_admin_token");location.reload();};
+async function importKeys(content){
+  if(!content || !content.trim()){ $("importMsg").className="err small"; $("importMsg").textContent="没有可导入的内容"; return; }
+  $("importMsg").className="muted small"; $("importMsg").textContent="校验并导入中…";
+  try{
+    const r = await api("/admin/api/import-keys", {method:"POST", body:JSON.stringify({content, overwrite:$("importOverwrite").checked})});
+    state.data.providers = r.providers; render();
+    const added=(r.reports||[]).reduce((n,x)=>n+(x.added||0),0);
+    const skipped=(r.skipped||[]).length + (r.reports||[]).reduce((n,x)=>n+(x.skipped||0),0);
+    const errs=(r.reports||[]).flatMap(x=>(x.errors||[]).map(e=>`${x.provider}: ${e}`));
+    const sk=(r.skipped||[]).map(x=>`${x.provider} ${x.key||""}：${x.reason}`).slice(0,12);
+    $("importMsg").className="ok small";
+    $("importMsg").textContent = `导入完成：新增 ${added}，跳过/无效 ${skipped}`;
+    if(errs.length||sk.length) $("importMsg").textContent += "\n" + [...errs,...sk].join("\n");
+  }catch(e){ $("importMsg").className="err small"; $("importMsg").textContent=e.message; }
+}
+$("importPickBtn").onclick=()=>$("importFile").click();
+$("importFile").onchange=()=>{
+  const f=$("importFile").files[0]; if(!f) return;
+  if(f.size>1024*1024){ $("importMsg").className="err small"; $("importMsg").textContent="文件超过 1MB"; return; }
+  const reader=new FileReader();
+  reader.onload=()=>{ $("importText").value=String(reader.result||""); importKeys($("importText").value); };
+  reader.onerror=()=>{ $("importMsg").className="err small"; $("importMsg").textContent="读取文件失败"; };
+  reader.readAsText(f,"utf-8");
+};
+$("importTextBtn").onclick=()=>importKeys($("importText").value);
 $("addBtn").onclick=addKey;
 $("checkUpdateBtn").onclick=checkUpdate;
 $("applyUpdateBtn").onclick=applyUpdate;

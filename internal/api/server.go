@@ -651,6 +651,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "providers": s.router.Status()})
 			return http.StatusOK
 		}
+	case "/admin/api/import-keys":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		return s.handleImportKeys(w, r, requestID)
 	case "/admin/api/update/check":
 		if s.update == nil || !s.update.Enabled() {
 			writeError(w, http.StatusBadRequest, "自动更新未启用", "invalid_request_error", "update_disabled", requestID)

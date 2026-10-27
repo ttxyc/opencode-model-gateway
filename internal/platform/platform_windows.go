@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ttxyc/opencode-model-gateway/internal/installer"
 
 	"github.com/ttxyc/opencode-model-gateway/internal/app"
 	"github.com/ttxyc/opencode-model-gateway/internal/config"
@@ -199,29 +202,132 @@ func Status() (string, error) {
 	}
 }
 
-func OpenAdmin(home string) error {
-	url := "http://127.0.0.1:8788/admin"
-	if cfg, err := config.Load(home); err == nil {
-		url = fmt.Sprintf("http://127.0.0.1:%d/admin", cfg.Port)
+func scExe() string {
+	if root := os.Getenv("SystemRoot"); root != "" {
+		return filepath.Join(root, "System32", "sc.exe")
 	}
-	if m, err := mgr.Connect(); err == nil {
-		if s, err := m.OpenService(serviceName); err == nil {
-			st, _ := s.Query()
-			if st.State == svc.Stopped || st.State == svc.StopPending {
-				_ = s.Start()
-				deadline := time.Now().Add(10 * time.Second)
-				for time.Now().Before(deadline) {
-					if st, _ := s.Query(); st.State == svc.Running {
-						break
-					}
-					time.Sleep(250 * time.Millisecond)
-				}
+	return "sc.exe"
+}
+
+func ServiceInstalled() bool {
+	return exec.Command(scExe(), "query", serviceName).Run() == nil
+}
+
+func serviceHealthy(url string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(url, "/")+"/healthz", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func OpenAdmin(home string) error {
+	base := "http://127.0.0.1:8788"
+	if cfg, err := config.Load(home); err == nil {
+		base = fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+	}
+	url := base + "/admin"
+	if !ServiceInstalled() {
+		return errors.New("gateway service is not installed")
+	}
+	if !serviceHealthy(base) {
+		_ = exec.Command(scExe(), "start", serviceName).Run()
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			if serviceHealthy(base) {
+				break
 			}
-			_ = s.Close()
+			time.Sleep(300 * time.Millisecond)
 		}
-		_ = m.Disconnect()
+		if !serviceHealthy(base) {
+			return errors.New("gateway service is not running; start it in services.msc")
+		}
 	}
 	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", url).Start()
+}
+
+// DefaultAction implements the no-argument double-click behavior.
+func DefaultAction(home string) error {
+	if ServiceInstalled() {
+		return OpenAdmin(home)
+	}
+	if !IsElevated() {
+		return ElevateInstall(home)
+	}
+	return InstallEmbedded(home)
+}
+
+// InstallEmbedded extracts the embedded installer and runs install.ps1 once.
+func InstallEmbedded(home string) error {
+	if !IsElevated() {
+		return errors.New("installation requires administrator privileges")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	dir, err := installer.Prepare(exe)
+	if err != nil {
+		return err
+	}
+	script := installer.ScriptPath(dir)
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DataHome", home, "-NoKeyPrompt")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	runErr := cmd.Run()
+	if runErr != nil {
+		fmt.Printf("\n安装失败，临时安装目录保留用于排查：%s\n", dir)
+		pause()
+		return runErr
+	}
+	installer.Cleanup(dir)
+	fmt.Printf("\n安装完成。\n")
+	fmt.Printf("管理页：http://127.0.0.1:8788/admin\n")
+	fmt.Printf("客户端 token：%s\n", filepath.Join(home, "config", "client.token"))
+	fmt.Printf("管理员 token：%s\n", filepath.Join(home, "config", "admin.token"))
+	if err := OpenAdmin(home); err != nil {
+		fmt.Printf("自动打开管理页失败：%v\n请手动打开 http://127.0.0.1:8788/admin\n", err)
+	}
+	pause()
+	return nil
+}
+
+// ElevateInstall relaunches the same executable with UAC.
+func ElevateInstall(home string) error {
+	if IsElevated() {
+		return InstallEmbedded(home)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	script := fmt.Sprintf("Start-Process -FilePath %s -ArgumentList @('--install-elevated','--home',%s) -Verb RunAs", psQuote(exe), psQuote(home))
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("elevation failed or cancelled: %w", err)
+	}
+	return nil
+}
+
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func pause() {
+	if os.Getenv("GATEWAY_NO_PAUSE") == "1" {
+		return
+	}
+	fmt.Print("\n按 Enter 关闭此窗口...")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 func PrepareApply(home, newPath string) error {

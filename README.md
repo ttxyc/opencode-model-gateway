@@ -20,7 +20,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.0.5" \
+  -ldflags "-s -w -X main.version=1.1.0" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 
@@ -49,10 +49,18 @@ opencode-gateway-win-x64/
    └─ upgrade.ps1
 ```
 
-## 安装（仅一次管理员）
+## 安装（双击安装，仅一次管理员）
+
+1. 从 GitHub **Releases** 下载 `opencode-gateway-win-x64.zip` 并解压（不要用仓库 Code → Download ZIP；源码包没有 exe）
+2. 双击 `gateway.exe`
+3. 首次会弹一次 UAC；允许后自动安装服务
+4. 安装完成会自动打开 `http://127.0.0.1:8788/admin`
+5. 用 `C:\ProgramData\opencode-model-gateway\config\admin.token` 登录
+6. 在页面「导入 key 配置」选择旧的 `quota-line.json`，或直接粘贴 JSON
+
+服务已安装时，双击 `gateway.exe` 只打开管理页，不会重装。首次安装也可以继续用脚本：
 
 ```powershell
-# 以管理员打开 PowerShell
 cd <解压目录>\scripts
 .\install.ps1 -QuotaLinePath "C:\path\to\quota-line.json"
 ```
@@ -63,6 +71,7 @@ cd <解压目录>\scripts
 - `-ClientTokenFile`：复用旧网关 token（迁移时避免所有工具改 token）
 - `-UpdateProxy`：只给服务设置 GitHub 更新用的代理（如 `http://127.0.0.1:10808`）；不填会自动读取当前用户 Internet 代理
 - `-NoUpdateProxy`：不设置更新代理（GitHub 可直连时用）
+- `-NoKeyPrompt`：不交互输入 key（双击安装默认使用；首次无 key，安装后页面导入）
 - `-SkipWSL`：不配置当前 Ubuntu 的 hosts 别名
 - `-SkipFirewall`：不创建 WSL 网段防火墙规则
 
@@ -103,6 +112,7 @@ sc.exe config opencode-model-gateway start= auto|demand|disabled
 - 首次输入 `admin.token`
 - 选择已有服务商（modelscope/cline/atria/amd/deepseek）
 - 粘贴 key → 调平台余额/模型接口校验 → 保存 → 热加载
+- **导入 key 配置**：选择 `quota-line.json` 或粘贴 JSON；默认合并追加、不覆盖已有 key，可勾选覆盖
 - 删除 key、查看余额/冷却/耗尽
 - 检查/安装更新
 
@@ -137,7 +147,7 @@ http://opencode-gateway.local:8788/...
 - 校验 `latest.json` 的 Ed25519 签名与 exe SHA256
 - 停服务 → 替换 exe → 启动 → `/healthz`；失败自动回滚旧 exe
 - 签名私钥在 GitHub Actions Secret `GATEWAY_SIGNING_KEY`（值就是本机 `gateway-signing.key` 的内容；不要入库/贴聊天）；公钥在 `publickey.txt`
-- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.0.5`；CI 会构建、签名并发布 Release
+- 发布：在 GitHub 仓库 Settings → Secrets and variables → Actions 添加 `GATEWAY_SIGNING_KEY`，然后打 tag `gateway-v1.1.0`；CI 会构建、签名并发布 Release
 
 ## 迁移当前 WSL 网关
 

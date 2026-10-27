@@ -189,3 +189,40 @@ func TestAdmin(t *testing.T) {
 		t.Fatalf("admin add %d %s", code, body)
 	}
 }
+
+func TestImportKeysMergeAndOverwrite(t *testing.T) {
+	ts, _, cfg, r := newTestServer(t)
+	body := `{"content":"{\"modelscope\":{\"keys\":[\"ms-good-key-0001\",\"ms-new-key-1\"]}}","overwrite":false}`
+	code, out, _ := do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.AdminToken, body)
+	if code != 200 || !strings.Contains(out, `"added":1`) || !strings.Contains(out, `"已存在"`) {
+		t.Fatalf("import merge %d %s", code, out)
+	}
+	keys := r.Keys("modelscope")
+	if len(keys) != 3 || keys[2] != "ms-new-key-1" {
+		t.Fatalf("merge keys %v", keys)
+	}
+	body = `{"content":"{\"modelscope\":{\"keys\":[\"ms-overwrite-key\"]}}","overwrite":true}`
+	code, out, _ = do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.AdminToken, body)
+	if code != 200 || !strings.Contains(out, `"added":1`) {
+		t.Fatalf("import overwrite %d %s", code, out)
+	}
+	keys = r.Keys("modelscope")
+	if len(keys) != 1 || keys[0] != "ms-overwrite-key" {
+		t.Fatalf("overwrite keys %v", keys)
+	}
+}
+
+func TestImportKeysRejectsUnknownAndBadJSON(t *testing.T) {
+	ts, _, cfg, _ := newTestServer(t)
+	code, out, _ := do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.AdminToken, `{"content":"not json"}`)
+	if code != 400 {
+		t.Fatalf("bad json got %d %s", code, out)
+	}
+	code, out, _ = do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.AdminToken, `{"content":"{\"unknown\":{\"keys\":[\"x\"]}}"}`)
+	if code != 200 || !strings.Contains(out, "未知服务商") {
+		t.Fatalf("unknown provider %d %s", code, out)
+	}
+	if code, _, _ = do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.ClientToken, `{"content":"{}"}`); code != 401 {
+		t.Fatalf("expected admin auth, got %d", code)
+	}
+}

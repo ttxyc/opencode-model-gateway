@@ -88,6 +88,13 @@ type KeyStatus struct {
 	LastError    string     `json:"lastError,omitempty"`
 }
 
+type ImportReport struct {
+	Provider string   `json:"provider"`
+	Added    int      `json:"added"`
+	Skipped  int      `json:"skipped"`
+	Errors   []string `json:"errors,omitempty"`
+}
+
 func New(cfg *config.Config, log *logx.Logger) *Router {
 	r := &Router{
 		cfg: cfg,
@@ -889,6 +896,65 @@ func (r *Router) AddKey(provider, key string) error {
 	r.keys[provider] = keys
 	r.keysMod = time.Time{}
 	return nil
+}
+
+func (r *Router) ImportKeys(sections map[string][]string, overwrite bool) ([]ImportReport, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	order := make([]string, 0, len(sections))
+	for id := range sections {
+		order = append(order, id)
+	}
+	sort.Strings(order)
+	reports := make([]ImportReport, 0, len(order))
+	for _, provider := range order {
+		report := ImportReport{Provider: provider}
+		if _, ok := r.cfg.Providers[provider]; !ok {
+			report.Errors = append(report.Errors, "unknown provider")
+			reports = append(reports, report)
+			continue
+		}
+		incoming := sections[provider]
+		if len(incoming) == 0 {
+			report.Errors = append(report.Errors, "no keys in file")
+			reports = append(reports, report)
+			continue
+		}
+		current := append([]string(nil), r.loadKeysLocked(provider)...)
+		seen := map[string]bool{}
+		next := make([]string, 0, len(current)+len(incoming))
+		if !overwrite {
+			for _, k := range current {
+				seen[k] = true
+				next = append(next, k)
+			}
+		}
+		for _, k := range incoming {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			if seen[k] {
+				report.Skipped++
+				continue
+			}
+			seen[k] = true
+			next = append(next, k)
+			report.Added++
+		}
+		if len(next) == 0 {
+			report.Errors = append(report.Errors, "no valid keys to import")
+			reports = append(reports, report)
+			continue
+		}
+		if err := r.writeKeysLocked(provider, next); err != nil {
+			return reports, err
+		}
+		r.keys[provider] = next
+		r.keysMod = time.Time{}
+		reports = append(reports, report)
+	}
+	return reports, nil
 }
 
 func (r *Router) DeleteKey(provider, keyHash string) error {
