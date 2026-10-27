@@ -1,0 +1,5 @@
+gateway.exe
+gateway-linux
+*.key
+.secrets/
+dist/

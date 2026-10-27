@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opencode Model Gateway</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--fg:#e7eaf0;--muted:#8b93a7;--line:#2a2f3a;--ok:#35c28a;--warn:#e0a33a;--bad:#e05c5c;--accent:#5b9dff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+input,select,button{font:inherit;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);padding:7px 9px}
+button{background:#1d2430;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}
+button.danger{background:#2a1618;border-color:#5a2a2e;color:#ffb4b4}
+button:disabled{opacity:.45;cursor:not-allowed}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}
+th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+.tag.ok{color:var(--ok);border-color:#1d5a40}.tag.bad{color:var(--bad);border-color:#5a2a2e}.tag.warn{color:var(--warn);border-color:#5a4720}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.muted{color:var(--muted)}.small{font-size:12px}.err{color:var(--bad);white-space:pre-wrap}.ok{color:var(--ok)}
+.hidden{display:none}.banner{padding:9px 12px;border-radius:8px;background:#1b2333;border:1px solid #2b3a56;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>opencode Model Gateway</h1>
+  <div class="sub" id="sub">本地网关 · 服务商与 key 管理</div>
+
+  <div id="tokenBox" class="card">
+    <div class="row">
+      <div style="flex:1">
+        <div style="font-weight:600">输入管理员令牌</div>
+        <div class="muted small">令牌在 C:\ProgramData\opencode-model-gateway\config\admin.token</div>
+      </div>
+      <input id="token" type="password" placeholder="admin token" style="min-width:260px">
+      <button class="primary" id="loginBtn">进入</button>
+    </div>
+    <div id="loginErr" class="err small" style="margin-top:8px"></div>
+  </div>
+
+  <div id="main" class="hidden">
+    <div class="banner row">
+      <div style="flex:1" id="summary">加载中…</div>
+      <button id="refreshBtn">刷新</button>
+      <button id="logoutBtn">退出</button>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">添加 key</div>
+          <div class="muted small">选择已有服务商，粘贴 key；会先调用平台余额/模型接口校验</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <select id="provider"></select>
+        <input id="newKey" type="password" placeholder="粘贴 API key" style="flex:1;min-width:260px">
+        <button class="primary" id="addBtn">校验并添加</button>
+      </div>
+      <div id="addMsg" class="small" style="margin-top:8px"></div>
+    </div>
+
+    <div id="providers" class="grid"></div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">版本更新</div>
+          <div class="muted small" id="updateText">—</div>
+        </div>
+        <div class="row">
+          <button id="checkUpdateBtn">检查更新</button>
+          <button class="primary" id="applyUpdateBtn" disabled>安装更新</button>
+        </div>
+      </div>
+      <div id="updateMsg" class="small" style="margin-top:8px"></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null };
+
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function fmtBalance(v){return v===null||v===undefined?"—":Number(v).toLocaleString();}
+function fmtTime(v){if(!v)return"—";const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString();}
+function tag(k){
+  if(k.exhausted) return '<span class="tag bad">耗尽</span>';
+  if(k.cooldownUntil) return '<span class="tag warn">冷却</span>';
+  if(k.balance!==null&&k.balance!==undefined) return '<span class="tag ok">可用</span>';
+  return '<span class="tag">未知</span>';
+}
+
+async function api(path, opts={}){
+  const r = await fetch(path, {...opts, headers:{"X-Admin-Token": state.token, "Content-Type":"application/json", ...(opts.headers||{})}});
+  let body = null;
+  try{ body = await r.json(); }catch(_){}
+  if(!r.ok) throw new Error((body&&body.error&&body.error.message)||("HTTP "+r.status));
+  return body;
+}
+
+function render(){
+  if(!state.data) return;
+  const d = state.data;
+  $("sub").textContent = `本地网关 · v${d.version} · 请求 ${d.counters?.chatRequests||0}`;
+  $("summary").innerHTML = `服务正常 · v${esc(d.version)} · 活动请求 ${d.counters?.active||0} · 累计请求 ${d.counters?.chatRequests||0}`;
+  $("providers").innerHTML = (d.providers||[]).map(p=>`
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div><b>${esc(p.label||p.id)}</b> <span class="muted small">${esc(p.id)}</span></div>
+        <span class="muted small">${p.currentKey?("当前 "+esc(p.currentKey)):""}</span>
+      </div>
+      <table>
+        <thead><tr><th>key</th><th>余额</th><th>状态</th><th></th></tr></thead>
+        <tbody>
+        ${(p.keys||[]).map(k=>`<tr>
+          <td class="mono">${esc(k.key)}</td>
+          <td>${fmtBalance(k.balance)}</td>
+          <td>${tag(k)} ${k.balanceError?`<span class="muted small">${esc(k.balanceError)}</span>`:""}</td>
+          <td style="text-align:right"><button class="danger small" data-del="${esc(p.id)}" data-hash="${esc(k.keyHash)}">删除</button></td>
+        </tr>`).join("") || '<tr><td colspan="4" class="muted">暂无 key</td></tr>'}
+        </tbody>
+      </table>
+    </div>`).join("");
+  document.querySelectorAll("[data-del]").forEach(btn=>btn.onclick=()=>deleteKey(btn.dataset.del, btn.dataset.hash));
+  const pd = (d.providers||[]).find(p=>p.id==="modelscope") ? (d.providers||[]) : (d.providers||[]);
+  const cur = $("provider").value;
+  $("provider").innerHTML = pd.map(p=>`<option value="${esc(p.id)}">${esc(p.label||p.id)}</option>`).join("");
+  if(cur) $("provider").value = cur;
+  const u = d.update;
+  if(u){
+    state.update = u;
+    $("updateText").textContent = `当前 ${u.current||d.version}${u.latest?` · 最新 ${u.latest}`:""}${u.error?` · ${u.error}`:""}`;
+    $("applyUpdateBtn").disabled = !u.available;
+    $("updateMsg").textContent = u.available ? "发现新版本，可安装（服务会短暂重启）" : "已是最新版本";
+  }
+}
+
+async function load(){
+  const d = await api("/admin/api/status");
+  state.data = d; $("tokenBox").classList.add("hidden"); $("main").classList.remove("hidden"); render();
+}
+
+async function addKey(){
+  const provider = $("provider").value, key = $("newKey").value.trim();
+  if(!provider||!key){ $("addMsg").className="err small"; $("addMsg").textContent="请选择服务商并填入 key"; return; }
+  $("addBtn").disabled = true; $("addMsg").className="muted small"; $("addMsg").textContent="校验中…";
+  try{
+    const r = await api("/admin/api/keys", {method:"POST", body:JSON.stringify({provider,key})});
+    $("newKey").value="";
+    $("addMsg").className="ok small"; $("addMsg").textContent = r.balance!==null&&r.balance!==undefined ? `已添加，余额 ${r.balance}` : "已添加";
+    state.data.providers = r.providers; render();
+  }catch(e){ $("addMsg").className="err small"; $("addMsg").textContent=e.message; }
+  finally{ $("addBtn").disabled=false; }
+}
+
+async function deleteKey(provider,hash){
+  if(!confirm(`删除 ${provider} 的 key ${hash}？`)) return;
+  try{ const r=await api("/admin/api/keys",{method:"DELETE",body:JSON.stringify({provider,keyHash:hash})}); state.data.providers=r.providers; render(); }
+  catch(e){ alert(e.message); }
+}
+
+async function checkUpdate(){
+  $("checkUpdateBtn").disabled=true; $("updateMsg").textContent="检查中…";
+  try{ const u=await api("/admin/api/update/check"); state.data.update=u; render(); }
+  catch(e){ $("updateMsg").className="err small"; $("updateMsg").textContent=e.message; }
+  finally{ $("checkUpdateBtn").disabled=false; }
+}
+
+async function applyUpdate(){
+  if(!confirm("安装更新并重启服务？")) return;
+  try{ await api("/admin/api/update/apply",{method:"POST"}); $("updateMsg").className="ok small"; $("updateMsg").textContent="更新已开始，稍后刷新页面"; }
+  catch(e){ $("updateMsg").className="err small"; $("updateMsg").textContent=e.message; }
+}
+
+$("loginBtn").onclick=async()=>{ state.token=$("token").value.trim(); localStorage.setItem("gw_admin_token",state.token); $("loginErr").textContent=""; try{await load();}catch(e){$("loginErr").textContent=e.message;} };
+$("token").addEventListener("keydown",e=>{if(e.key==="Enter")$("loginBtn").click();});
+$("refreshBtn").onclick=()=>load().catch(e=>alert(e.message));
+$("logoutBtn").onclick=()=>{localStorage.removeItem("gw_admin_token");location.reload();};
+$("addBtn").onclick=addKey;
+$("checkUpdateBtn").onclick=checkUpdate;
+$("applyUpdateBtn").onclick=applyUpdate;
+
+if(state.token){ load().catch(e=>{ $("tokenBox").classList.remove("hidden"); $("loginErr").textContent=e.message; }); }
+</script>
+</body>
+</html>

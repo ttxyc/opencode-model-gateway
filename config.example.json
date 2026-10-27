@@ -1,0 +1,55 @@
+{
+  "bind": "0.0.0.0",
+  "port": 8788,
+  "token": "CHANGE-ME-CLIENT-TOKEN-AT-LEAST-16",
+  "adminToken": "CHANGE-ME-ADMIN-TOKEN-AT-LEAST-16",
+  "providers": {
+    "modelscope": {
+      "label": "ModelScope 魔搭",
+      "baseURL": "https://api-inference.modelscope.cn/v1",
+      "models": ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai/DeepSeek-V4-Pro-0813"]
+    },
+    "cline": {
+      "label": "Cline",
+      "baseURL": "https://api.cline.bot/api/v1",
+      "models": ["cohere/north-mini-code:free", "nvidia/nemotron-3-super-120b-a12b:free"]
+    },
+    "atria": {
+      "label": "Atria",
+      "baseURL": "https://api.atria-asi.ai/v1",
+      "models": ["Atria-Dawn-Preview"]
+    },
+    "amd": {
+      "label": "AMD Radeon",
+      "baseURL": "https://developer.amd.com.cn/radeon/api/v1",
+      "models": ["DeepSeek-V4.1-Flash", "Qwen3.8-Flash-Next", "GLM-5.3-Flash"]
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "baseURL": "https://api.deepseek.com/v1",
+      "models": ["deepseek-v4-pro", "deepseek-flash"]
+    }
+  },
+  "aliases": {
+    "ms-v4.1-flash": "modelscope/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "ds-flash": "deepseek/deepseek-flash"
+  },
+  "limits": {
+    "maxBodyBytes": 67108864,
+    "maxConcurrent": 64,
+    "headersTimeoutMs": 300000,
+    "totalTimeoutMs": 900000,
+    "maxRetries": 2
+  },
+  "log": {
+    "maxBytes": 10485760,
+    "maxFiles": 5
+  },
+  "update": {
+    "enabled": true,
+    "manifestUrl": "https://github.com/ttxyc/opencode-model-gateway/releases/latest/download/latest.json",
+    "publicKey": "",
+    "checkHours": 24,
+    "allowRestart": true
+  }
+}
