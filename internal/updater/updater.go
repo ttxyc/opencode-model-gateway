@@ -56,7 +56,7 @@ func New(cfg *config.Config, version string, log *logx.Logger, apply func(string
 	return &Manager{
 		Home: cfg.Home, Version: version, ManifestURL: cfg.Update.ManifestURL,
 		PublicKey: pub, Log: log, ApplyFunc: apply,
-		Client: &http.Client{Timeout: 60 * time.Second},
+		Client: &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
