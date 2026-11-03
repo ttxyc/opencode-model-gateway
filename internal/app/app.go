@@ -42,9 +42,14 @@ func Run(ctx context.Context, home string, opts Options) error {
 		log.Info("router_ready", map[string]any{"providers": r.Status()})
 	}()
 
-	var update *updater.Manager
+	// Keep the concrete pointer separate: assigning a nil *updater.Manager
+	// directly to the api.UpdateManager interface would produce a non-nil
+	// interface, and /admin/api/status would call Cached() on a nil pointer.
+	var updateMgr *updater.Manager
+	var update api.UpdateManager
 	if cfg.Update.Enabled {
-		update = updater.New(cfg, opts.Version, log, opts.ApplyFunc)
+		updateMgr = updater.New(cfg, opts.Version, log, opts.ApplyFunc)
+		update = updateMgr
 	}
 	server := api.New(cfg, r, log, api.Options{
 		Version: opts.Version, StartedAt: time.Now(), Update: update, ApplyUpdate: opts.ApplyFunc,
@@ -77,7 +82,7 @@ func Run(ctx context.Context, home string, opts Options) error {
 
 	var failures int
 	go func() {
-		if update == nil {
+		if updateMgr == nil {
 			return
 		}
 		select {
@@ -85,7 +90,7 @@ func Run(ctx context.Context, home string, opts Options) error {
 			return
 		case <-time.After(2 * time.Minute):
 		}
-		checkUpdate(ctx, update, log, cfg.Update.AllowRestart)
+		checkUpdate(ctx, updateMgr, log, cfg.Update.AllowRestart)
 	}()
 
 	for {
@@ -124,8 +129,8 @@ func Run(ctx context.Context, home string, opts Options) error {
 				failures = 0
 			}
 		case <-updateTicker.C:
-			if update != nil {
-				go checkUpdate(ctx, update, log, cfg.Update.AllowRestart)
+			if updateMgr != nil {
+				go checkUpdate(ctx, updateMgr, log, cfg.Update.AllowRestart)
 			}
 		}
 	}

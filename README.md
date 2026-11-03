@@ -1,6 +1,6 @@
 # opencode Model Gateway（Windows 原生服务）
 
-Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真正的 Windows 服务运行；支持 ModelScope / Cline / Atria / AMD / DeepSeek 多 key 路由、余额选择、失败切换、内置管理页面和签名自更新。
+Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真正的 Windows 服务运行；支持 ModelScope / Cline / Atria / AMD / DeepSeek 多 key 路由，以及 WorkBuddy（国内区/国际区，令牌登录 + 多账号池）；内置管理页面和签名自更新。
 
 ## 特性
 
@@ -8,10 +8,11 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 - 单 exe 约 7~10MB，空闲 RSS 约 20~35MB；无 Node/NSSM/.NET/WSL 依赖（WSL 仅作为客户端）
 - 开机自启、SCM failure 自动重启、进程内 `/healthz` watchdog
 - `C:\ProgramData\opencode-model-gateway` 统一数据目录；key 与 token 分离 ACL
-- `/admin` 内置网页：选择服务商、校验并添加/删除 key、余额/冷却/耗尽状态、更新
+- `/admin` 内置网页：选择服务商、校验并添加/删除 key、余额/冷却/耗尽状态、WorkBuddy 账号池（DSH 导入 / 浏览器登录 / 目录） 、更新
 - 桌面快捷方式：`opencode Gateway.lnk`，双击打开管理页，服务停止时尝试启动
 - 签名自更新：GitHub Release + Ed25519，升级无需管理员
 - WSL 通过 `opencode-gateway.local` 访问（hosts 别名，无额外常驻进程）
+- WorkBuddy：独立令牌通道 + 多账号轮换，不进入静态 key 池；自动重写 11128 渠道校验并刷新令牌
 
 ## 构建
 
@@ -20,7 +21,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.1.2" \
+  -ldflags "-s -w -X main.version=1.2.0" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 
@@ -114,6 +115,7 @@ sc.exe config opencode-model-gateway start= auto|demand|disabled
 - 粘贴 key → 调平台余额/模型接口校验 → 保存 → 热加载
 - **导入 key 配置**：选择 `quota-line.json` 或粘贴 JSON；默认合并追加、不覆盖已有 key，可勾选覆盖
 - 删除 key、查看余额/冷却/耗尽
+- **WorkBuddy 账号池**：从 DSH 凭据一键导入、国内区/国际区浏览器登录、账号状态/到期、在线模型目录（仅展示）、重置/删除
 - 检查/安装更新
 
 普通工具使用 `client.token` 调用 `/v1`，不能进入管理页。
@@ -133,6 +135,16 @@ Model:    modelscope/deepseek-ai/DeepSeek-V4.1-Flash-1017
 ```text
 http://127.0.0.1:8788/p/modelscope/v1
 ```
+
+WorkBuddy（令牌通道）：
+
+```text
+国内区：http://127.0.0.1:8788/p/workbuddy/v1
+国际区：http://127.0.0.1:8788/p/workbuddy-global/v1
+统一入口模型名：workbuddy/<model>、workbuddy-global/<model>
+```
+
+WorkBuddy 凭据存在 `C:\ProgramData\opencode-model-gateway\state\workbuddy.json`（SYSTEM/管理员 ACL），**不会**写入 `keys/quota-line.json`，也不参与其它服务商的余额/冷却/换 key。
 
 WSL 内：
 

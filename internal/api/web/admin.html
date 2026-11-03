@@ -81,6 +81,23 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
       <div id="importMsg" class="small" style="margin-top:8px"></div>
     </div>
 
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">WorkBuddy 账号池</div>
+          <div class="muted small">令牌登录（access/refresh）；支持国内区与国际区、多账号轮换；不进入其它服务商的 key 池</div>
+        </div>
+        <div class="row">
+          <button id="wbImportBtn">从 DSH 导入</button>
+          <button id="wbLoginCnBtn">登录国内区</button>
+          <button id="wbLoginGlobalBtn">登录国际区</button>
+        </div>
+      </div>
+      <div id="wbMsg" class="small" style="margin-top:8px"></div>
+      <div id="wbModels" class="small" style="margin-top:8px"></div>
+      <div id="wbRegions" style="margin-top:10px"></div>
+    </div>
+
     <div id="providers" class="grid"></div>
 
     <div class="card">
@@ -100,7 +117,7 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null };
+const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null, wb: null, wbPoll: null };
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtBalance(v){return v===null||v===undefined?"—":Number(v).toLocaleString();}
@@ -125,7 +142,8 @@ function render(){
   const d = state.data;
   $("sub").textContent = `本地网关 · v${d.version} · 请求 ${d.counters?.chatRequests||0}`;
   $("summary").innerHTML = `服务正常 · v${esc(d.version)} · 活动请求 ${d.counters?.active||0} · 累计请求 ${d.counters?.chatRequests||0}`;
-  $("providers").innerHTML = (d.providers||[]).map(p=>`
+  const generic = (d.providers||[]).filter(p=>!String(p.id).startsWith("workbuddy"));
+  $("providers").innerHTML = generic.map(p=>`
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div><b>${esc(p.label||p.id)}</b> <span class="muted small">${esc(p.id)}</span></div>
@@ -144,9 +162,8 @@ function render(){
       </table>
     </div>`).join("");
   document.querySelectorAll("[data-del]").forEach(btn=>btn.onclick=()=>deleteKey(btn.dataset.del, btn.dataset.hash));
-  const pd = (d.providers||[]).find(p=>p.id==="modelscope") ? (d.providers||[]) : (d.providers||[]);
   const cur = $("provider").value;
-  $("provider").innerHTML = pd.map(p=>`<option value="${esc(p.id)}">${esc(p.label||p.id)}</option>`).join("");
+  $("provider").innerHTML = generic.map(p=>`<option value="${esc(p.id)}">${esc(p.label||p.id)}</option>`).join("");
   if(cur) $("provider").value = cur;
   const u = d.update;
   if(u){
@@ -157,9 +174,101 @@ function render(){
   }
 }
 
+function wbTag(a){
+  if(a.status==="invalid") return '<span class="tag bad">需重登</span>';
+  if(a.status==="exhausted") return '<span class="tag warn">耗尽/冷却</span>';
+  return '<span class="tag ok">可用</span>';
+}
+function renderWB(){
+  const d = state.wb; if(!d) return;
+  const groups = {cn:[], global:[]};
+  (d.accounts||[]).forEach(a=>{ (groups[a.region]||(groups[a.region]=[])).push(a); });
+  const label = {cn:"国内区", global:"国际区"};
+  $("wbRegions").innerHTML = ["cn","global"].map(r=>`
+    <div style="margin-bottom:10px">
+      <div class="row" style="justify-content:space-between">
+        <div><b>${label[r]}</b> <span class="muted small">${(groups[r]||[]).length} 个账号</span></div>
+      </div>
+      <table>
+        <thead><tr><th>账号</th><th>域</th><th>令牌到期</th><th>状态</th><th></th></tr></thead>
+        <tbody>
+        ${(groups[r]||[]).map(a=>`<tr>
+          <td>${esc(a.label||a.id)}<div class="muted small mono">${esc(a.id)}</div></td>
+          <td class="mono">${esc(a.domain||"—")}</td>
+          <td>${fmtTime(a.expiresAt)}</td>
+          <td>${wbTag(a)} ${a.lastError?`<span class="muted small">${esc(a.lastError)}</span>`:""}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="small" data-wb-models="${esc(a.id)}">目录</button>
+            <button class="small" data-wb-reset="${esc(a.id)}">重置</button>
+            <button class="danger small" data-wb-del="${esc(a.id)}">删除</button>
+          </td>
+        </tr>`).join("") || '<tr><td colspan="5" class="muted">暂无账号</td></tr>'}
+        </tbody>
+      </table>
+    </div>`).join("");
+  document.querySelectorAll("[data-wb-models]").forEach(b=>b.onclick=()=>wbModels(b.dataset.wbModels));
+  document.querySelectorAll("[data-wb-reset]").forEach(b=>b.onclick=()=>wbReset(b.dataset.wbReset));
+  document.querySelectorAll("[data-wb-del]").forEach(b=>b.onclick=()=>wbRemove(b.dataset.wbDel));
+}
+async function loadWB(){
+  try{ state.wb = await api("/admin/api/workbuddy/status"); renderWB(); }
+  catch(e){ $("wbMsg").className="err small"; $("wbMsg").textContent=e.message; }
+}
+function wbSay(cls,text){ $("wbMsg").className=cls+" small"; $("wbMsg").textContent=text; }
+async function wbImport(){
+  $("wbImportBtn").disabled=true; wbSay("muted","扫描 DSH 凭据中…");
+  try{
+    const r=await api("/admin/api/workbuddy/import",{method:"POST",body:JSON.stringify({})});
+    const x=r.result||{};
+    wbSay("ok",`导入完成：新增 ${x.imported||0}，跳过 ${x.skipped||0}，文件 ${(x.files||[]).length} 个` + ((x.errors||[]).length?`\n${x.errors.join("\n")}`:""));
+    await loadWB();
+  }catch(e){ wbSay("err",e.message); }
+  finally{ $("wbImportBtn").disabled=false; }
+}
+async function wbLogin(region){
+  if(state.wbPoll){ clearInterval(state.wbPoll); state.wbPoll=null; }
+  wbSay("muted","正在创建登录会话…");
+  try{
+    const r=await api("/admin/api/workbuddy/login/start",{method:"POST",body:JSON.stringify({region})});
+    $("wbMsg").className="muted small";
+    $("wbMsg").innerHTML=`请在浏览器打开并完成登录：<a href="${esc(r.authUrl)}" target="_blank" rel="noreferrer">${esc(r.authUrl)}</a><br>等待授权…`;
+    state.wbPoll=setInterval(async()=>{
+      try{
+        const p=await api("/admin/api/workbuddy/login/poll?state="+encodeURIComponent(r.state));
+        if(p.status==="done"){
+          clearInterval(state.wbPoll); state.wbPoll=null;
+          wbSay("ok","登录成功："+((p.account&&p.account.label)||"账号已保存"));
+          await loadWB();
+        }
+      }catch(e){
+        clearInterval(state.wbPoll); state.wbPoll=null; wbSay("err",e.message);
+      }
+    },1500);
+  }catch(e){ wbSay("err",e.message); }
+}
+async function wbRemove(id){
+  if(!confirm("删除这个 WorkBuddy 账号？")) return;
+  try{ const r=await api("/admin/api/workbuddy/remove",{method:"POST",body:JSON.stringify({id})}); state.wb={...(state.wb||{}),accounts:r.accounts}; renderWB(); }
+  catch(e){ wbSay("err",e.message); }
+}
+async function wbReset(id){
+  try{ const r=await api("/admin/api/workbuddy/reset",{method:"POST",body:JSON.stringify({id})}); state.wb={...(state.wb||{}),accounts:r.accounts}; renderWB(); wbSay("ok","账号状态已重置"); }
+  catch(e){ wbSay("err",e.message); }
+}
+async function wbModels(id){
+  wbSay("muted","读取模型目录中…");
+  try{
+    const r=await api("/admin/api/workbuddy/models?id="+encodeURIComponent(id));
+    const rows=(r.models||[]).map(m=>`<div class="mono">${esc(m.id)} · ${esc(m.name||"")} · ctx ${m.contextWindow||"—"} / out ${m.maxTokens||"—"}${m.supportsImages?" · img":""}${m.credits?` · ${esc(m.credits)}`:""}</div>`).join("");
+    $("wbModels").innerHTML=`<div style="font-weight:600;margin-bottom:4px">在线模型目录（仅展示）</div>`+(rows||'<span class="muted">没有返回模型</span>');
+    wbSay("ok","模型目录已更新");
+  }catch(e){ wbSay("err",e.message); }
+}
+
 async function load(){
   const d = await api("/admin/api/status");
   state.data = d; $("tokenBox").classList.add("hidden"); $("main").classList.remove("hidden"); render();
+  await loadWB();
 }
 
 async function addKey(){
@@ -236,6 +345,9 @@ $("exportBtn").onclick=async()=>{
 $("addBtn").onclick=addKey;
 $("checkUpdateBtn").onclick=checkUpdate;
 $("applyUpdateBtn").onclick=applyUpdate;
+$("wbImportBtn").onclick=wbImport;
+$("wbLoginCnBtn").onclick=()=>wbLogin("cn");
+$("wbLoginGlobalBtn").onclick=()=>wbLogin("global");
 
 if(state.token){ load().catch(e=>{ $("tokenBox").classList.remove("hidden"); $("loginErr").textContent=e.message; }); }
 </script>

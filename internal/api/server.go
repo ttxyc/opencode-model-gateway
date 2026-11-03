@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/ttxyc/opencode-model-gateway/internal/config"
 	"github.com/ttxyc/opencode-model-gateway/internal/logx"
 	"github.com/ttxyc/opencode-model-gateway/internal/router"
+	"github.com/ttxyc/opencode-model-gateway/internal/workbuddy"
 )
 
 //go:embed web/admin.html
@@ -76,6 +78,9 @@ type Server struct {
 
 	client    *http.Client
 	transport *http.Transport
+
+	wb       *workbuddy.Manager
+	wbClient *http.Client
 }
 
 func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *Server {
@@ -98,6 +103,18 @@ func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *
 		adminTok: opts.AdminToken, clientTok: opts.ClientToken,
 		client: client, transport: transport,
 	}
+	// WorkBuddy uses its own credential store and a proxy-free client. The
+	// generic transport above keeps honouring HTTPS_PROXY for update checks and
+	// the other providers; nothing here changes that path.
+	stateFile := filepath.Join(filepath.Dir(cfg.Paths.State), "workbuddy.json")
+	s.wb = workbuddy.NewManager(stateFile, log)
+	s.wbClient = &http.Client{Transport: &http.Transport{
+		Proxy:                 nil,
+		ResponseHeaderTimeout: time.Duration(cfg.Limits.HeadersTimeoutMS) * time.Millisecond,
+		MaxIdleConns:          60,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+	}}
 	if s.adminTok == "" {
 		s.adminTok = cfg.AdminToken
 	}
@@ -366,6 +383,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, requestID, p
 	payload["model"], _ = json.Marshal(upstreamModel)
 	body, _ = json.Marshal(payload)
 	provider := s.cfg.Providers[pid]
+	if workbuddy.IsKind(provider.Kind) {
+		return s.handleWorkBuddyChat(w, r, requestID, pid, provider, upstreamModel, body, r.URL.RawQuery)
+	}
 	upstreamURL := provider.BaseURL + sub + r.URL.RawQuery
 	if r.URL.RawQuery != "" {
 		upstreamURL = provider.BaseURL + sub + "?" + r.URL.RawQuery
@@ -594,6 +614,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 	if !s.adminAuthorized(r) {
 		writeError(w, http.StatusUnauthorized, "管理员令牌无效或非本机访问", "invalid_request_error", "invalid_admin_token", requestID)
 		return http.StatusUnauthorized
+	}
+	if strings.HasPrefix(path, "/admin/api/workbuddy/") {
+		return s.handleAdminWorkBuddy(w, r, requestID, path)
 	}
 	switch path {
 	case "/admin/api/status":
