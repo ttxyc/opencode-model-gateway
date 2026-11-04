@@ -21,7 +21,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.2.0" \
+  -ldflags "-s -w -X main.version=1.2.1" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 
@@ -142,6 +142,7 @@ WorkBuddy（令牌通道）：
 国内区：http://127.0.0.1:8788/p/workbuddy/v1
 国际区：http://127.0.0.1:8788/p/workbuddy-global/v1
 统一入口模型名：workbuddy/<model>、workbuddy-global/<model>
+积分余额：GET http://127.0.0.1:8788/p/workbuddy/v1/credits（客户端 token；返回每账号 credits/segments，供 quota-line TUI 显示）
 ```
 
 WorkBuddy 凭据存在 `C:\ProgramData\opencode-model-gateway\state\workbuddy.json`（SYSTEM/管理员 ACL），**不会**写入 `keys/quota-line.json`，也不参与其它服务商的余额/冷却/换 key。

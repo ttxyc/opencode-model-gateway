@@ -105,26 +105,32 @@ type Store struct {
 // Endpoints is overridable so tests can point at an httptest server. The
 // defaults are the production gateways observed working on 2026-11-03.
 type Endpoints struct {
-	CNPluginBase              string
-	CNChatBase                string
-	GlobalPluginBase          string
-	GlobalChatBase            string
-	GlobalCodeBuddyPluginBase string
-	GlobalCodeBuddyChatBase   string
-	PlatformCN                string
-	PlatformGlobal            string
+	CNPluginBase               string
+	CNChatBase                 string
+	GlobalPluginBase           string
+	GlobalChatBase             string
+	GlobalCodeBuddyPluginBase  string
+	GlobalCodeBuddyChatBase    string
+	PlatformCN                 string
+	PlatformGlobal             string
+	CNBillingBase              string
+	GlobalBillingBase          string
+	GlobalCodeBuddyBillingBase string
 }
 
 func DefaultEndpoints() Endpoints {
 	return Endpoints{
-		CNPluginBase:              "https://copilot.tencent.com/v2/plugin",
-		CNChatBase:                "https://copilot.tencent.com",
-		GlobalPluginBase:          "https://www.workbuddy.ai/v2/plugin",
-		GlobalChatBase:            "https://www.workbuddy.ai",
-		GlobalCodeBuddyPluginBase: "https://www.codebuddy.ai/v2/plugin",
-		GlobalCodeBuddyChatBase:   "https://www.codebuddy.ai",
-		PlatformCN:                "CLI",
-		PlatformGlobal:            "workbuddy",
+		CNPluginBase:               "https://copilot.tencent.com/v2/plugin",
+		CNChatBase:                 "https://copilot.tencent.com",
+		GlobalPluginBase:           "https://www.workbuddy.ai/v2/plugin",
+		GlobalChatBase:             "https://www.workbuddy.ai",
+		GlobalCodeBuddyPluginBase:  "https://www.codebuddy.ai/v2/plugin",
+		GlobalCodeBuddyChatBase:    "https://www.codebuddy.ai",
+		PlatformCN:                 "CLI",
+		PlatformGlobal:             "workbuddy",
+		CNBillingBase:              "https://www.codebuddy.cn",
+		GlobalBillingBase:          "https://www.workbuddy.ai",
+		GlobalCodeBuddyBillingBase: "https://www.codebuddy.ai",
 	}
 }
 
@@ -158,18 +164,26 @@ type Manager struct {
 
 	refreshMu sync.Mutex
 	refresh   map[string]*refreshCall
+
+	creditsCache map[string]creditsCacheEntry
+}
+
+type creditsCacheEntry struct {
+	at     time.Time
+	result CreditsResult
 }
 
 // NewManager loads the state file. A missing or corrupt file starts empty; the
 // gateway must not fail to boot because WorkBuddy is not configured yet.
 func NewManager(stateFile string, log *logx.Logger) *Manager {
 	m := &Manager{
-		path:    stateFile,
-		log:     log,
-		ep:      DefaultEndpoints(),
-		rr:      map[string]int{},
-		pending: map[string]*loginSession{},
-		refresh: map[string]*refreshCall{},
+		path:         stateFile,
+		log:          log,
+		ep:           DefaultEndpoints(),
+		rr:           map[string]int{},
+		pending:      map[string]*loginSession{},
+		refresh:      map[string]*refreshCall{},
+		creditsCache: map[string]creditsCacheEntry{},
 	}
 	m.client = &http.Client{Transport: &http.Transport{
 		Proxy:                 nil, // WorkBuddy CN/global must go direct; the gateway service has HTTPS_PROXY set.
@@ -325,6 +339,7 @@ func (m *Manager) Upsert(acc Account) (bool, error) {
 	acc.CooldownUntil = 0
 	for i := range m.store.Accounts {
 		if m.store.Accounts[i].ID == acc.ID {
+			m.creditsCache = map[string]creditsCacheEntry{}
 			if acc.LastUsedAt == 0 {
 				acc.LastUsedAt = m.store.Accounts[i].LastUsedAt
 			}
@@ -333,6 +348,7 @@ func (m *Manager) Upsert(acc Account) (bool, error) {
 		}
 	}
 	m.store.Accounts = append(m.store.Accounts, acc)
+	m.creditsCache = map[string]creditsCacheEntry{}
 	return true, m.saveLocked()
 }
 
@@ -346,6 +362,7 @@ func (m *Manager) Remove(id string) error {
 		}
 	}
 	m.store.Accounts = out
+	m.creditsCache = map[string]creditsCacheEntry{}
 	return m.saveLocked()
 }
 
@@ -355,6 +372,7 @@ func (m *Manager) Reset(id string) error {
 	defer m.mu.Unlock()
 	for i := range m.store.Accounts {
 		if m.store.Accounts[i].ID == id {
+			m.creditsCache = map[string]creditsCacheEntry{}
 			m.store.Accounts[i].Status = "ok"
 			m.store.Accounts[i].LastError = ""
 			m.store.Accounts[i].CooldownUntil = 0
@@ -386,6 +404,19 @@ func (m *Manager) Count(region string) int {
 		}
 	}
 	return n
+}
+
+// Accounts returns copies of every account in one region.
+func (m *Manager) Accounts(region string) []Account {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Account, 0, len(m.store.Accounts))
+	for _, a := range m.store.Accounts {
+		if a.Region == region {
+			out = append(out, a.clone())
+		}
+	}
+	return out
 }
 
 // Pick returns the next eligible account in a round-robin order. The returned

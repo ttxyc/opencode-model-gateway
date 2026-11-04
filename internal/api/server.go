@@ -236,6 +236,14 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request, requestI
 		writeError(w, http.StatusUnauthorized, "网关令牌无效", "invalid_request_error", "invalid_api_key", requestID)
 		return http.StatusUnauthorized
 	}
+	if r.Method == http.MethodGet && sub == "/credits" {
+		provider := s.cfg.Providers[providerID]
+		if provider == nil || !workbuddy.IsKind(provider.Kind) {
+			writeError(w, http.StatusNotFound, "该 provider 不支持 credits", "invalid_request_error", "not_found", requestID)
+			return http.StatusNotFound
+		}
+		return s.handleWorkBuddyCredits(w, r, requestID, providerID)
+	}
 	if r.Method == http.MethodGet && sub == "/models" {
 		return s.writeModels(w, providerID, false)
 	}

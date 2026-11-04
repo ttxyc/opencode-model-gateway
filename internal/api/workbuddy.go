@@ -398,3 +398,34 @@ func (s *Server) handleAdminWorkBuddy(w http.ResponseWriter, r *http.Request, re
 	writeError(w, http.StatusNotFound, "未知 WorkBuddy 管理接口", "invalid_request_error", "not_found", requestID)
 	return http.StatusNotFound
 }
+
+// handleWorkBuddyCredits is a client-authenticated (gateway token) endpoint so
+// the local TUI balance plugin never needs to see WorkBuddy tokens.
+func (s *Server) handleWorkBuddyCredits(w http.ResponseWriter, r *http.Request, requestID, providerID string) int {
+	if s.wb == nil {
+		writeError(w, http.StatusServiceUnavailable, "WorkBuddy 管理器未初始化", "gateway_error", "workbuddy_unavailable", requestID)
+		return http.StatusServiceUnavailable
+	}
+	provider := s.cfg.Providers[providerID]
+	if provider == nil || !workbuddy.IsKind(provider.Kind) {
+		writeError(w, http.StatusNotFound, "该 provider 不支持 credits", "invalid_request_error", "not_found", requestID)
+		return http.StatusNotFound
+	}
+	region := workbuddy.RegionForKind(provider.Kind)
+	result, err := s.wb.FetchCredits(r.Context(), region)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error(), "insufficient_quota", "workbuddy_no_account", requestID)
+		return http.StatusServiceUnavailable
+	}
+	if result.Total == nil && !result.Unlimited {
+		message := result.Error
+		if message == "" {
+			message = "WorkBuddy 积分查询失败"
+		}
+		writeError(w, http.StatusBadGateway, message, "upstream_error", "workbuddy_credits_failed", requestID)
+		return http.StatusBadGateway
+	}
+	w.Header().Set("x-gateway-provider", providerID)
+	writeJSON(w, http.StatusOK, result)
+	return http.StatusOK
+}

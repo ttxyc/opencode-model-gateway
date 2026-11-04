@@ -32,6 +32,14 @@ func newWorkBuddyHarness(t *testing.T, rejectFirst bool) (*httptest.Server, *con
 			_, _ = io.WriteString(w, `{"code":0,"data":{"accessToken":"wb-access-2","refreshToken":"wb-refresh-2","expiresIn":3600}}`)
 			return
 		}
+		if r.URL.Path == "/v2/billing/meter/get-user-resource" {
+			if got := r.Header.Get("Authorization"); got != "Bearer wb-access" && got != "Bearer wb-access-2" {
+				t.Errorf("billing authorization = %q", got)
+			}
+			w.Header().Set("content-type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{"Response":{"Data":{"Accounts":[{"CycleCapacityRemainPrecise":1234.5,"CycleCapacitySizePrecise":2000}]}}}}`)
+			return
+		}
 		if r.URL.Path != "/v2/chat/completions" {
 			t.Errorf("unexpected upstream path %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -89,6 +97,7 @@ func newWorkBuddyHarness(t *testing.T, rejectFirst bool) (*httptest.Server, *con
 		GlobalPluginBase: up.URL + "/v2/plugin", GlobalChatBase: up.URL,
 		GlobalCodeBuddyPluginBase: up.URL + "/v2/plugin", GlobalCodeBuddyChatBase: up.URL,
 		PlatformCN: "CLI", PlatformGlobal: "workbuddy",
+		CNBillingBase: up.URL, GlobalBillingBase: up.URL, GlobalCodeBuddyBillingBase: up.URL,
 	})
 	if _, err := s.wb.Upsert(workbuddy.Account{
 		ID: "user:u1", Label: "tester", Region: workbuddy.RegionCN, Domain: "www.codebuddy.cn",
@@ -210,5 +219,33 @@ func TestWorkBuddyRefreshesExpiredToken(t *testing.T) {
 	}
 	if updated.ExpiresAt <= time.Now().UnixMilli() {
 		t.Fatalf("expiry not updated: %d", updated.ExpiresAt)
+	}
+}
+
+func TestWorkBuddyCreditsEndpoint(t *testing.T) {
+	ts, cfg, s, _, _, _ := newWorkBuddyHarness(t, false)
+	acc, ok := s.wb.Find("user:u1")
+	if !ok {
+		t.Fatal("account missing")
+	}
+	acc.Domain = ""
+	if _, err := s.wb.Upsert(acc); err != nil {
+		t.Fatal(err)
+	}
+	status, out, _ := do(t, "GET", ts.URL+"/p/workbuddy/v1/credits", cfg.ClientToken, "")
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, out)
+	}
+	var doc struct {
+		Total *float64 `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Total == nil || *doc.Total != 1234.5 {
+		t.Fatalf("total=%v body=%s", doc.Total, out)
+	}
+	if strings.Contains(out, "wb-access") || strings.Contains(out, "wb-refresh") {
+		t.Fatalf("credits response leaked tokens: %s", out)
 	}
 }
