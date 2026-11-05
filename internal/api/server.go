@@ -525,6 +525,17 @@ func copyRequestHeaders(dst, src *http.Request) {
 	}
 }
 
+// scrubSSE reports whether the provider's stream needs empty-delta scrubbing.
+// WorkBuddy (CN and global) repeats null/empty members on every chunk, which
+// makes downstream clients split one reasoning block into many.
+func (s *Server) scrubSSE(providerID string) bool {
+	if s.cfg == nil {
+		return false
+	}
+	p := s.cfg.Providers[providerID]
+	return p != nil && workbuddy.IsKind(p.Kind)
+}
+
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, resp *http.Response, provider, requestID string, attempts int, _ bool) int {
 	defer resp.Body.Close()
 	ct := resp.Header.Get("Content-Type")
@@ -542,18 +553,38 @@ func (s *Server) relay(w http.ResponseWriter, r *http.Request, resp *http.Respon
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
+		var scrub *sseScrubber
+		if s.scrubSSE(provider) {
+			scrub = newSSEScrubber()
+		}
+		write := func(b []byte) bool {
+			if len(b) == 0 {
+				return true
+			}
+			if _, werr := w.Write(b); werr != nil {
+				return false
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return true
+		}
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := resp.Body.Read(buf)
 			if n > 0 {
-				if _, werr := w.Write(buf[:n]); werr != nil {
-					break
+				frame := buf[:n]
+				if scrub != nil {
+					frame = scrub.Write(frame)
 				}
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
+				if !write(frame) {
+					break
 				}
 			}
 			if err != nil {
+				if scrub != nil {
+					write(scrub.Flush())
+				}
 				break
 			}
 		}
