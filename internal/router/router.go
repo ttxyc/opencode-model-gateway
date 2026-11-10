@@ -32,6 +32,9 @@ var (
 	insufficientRe = regexp.MustCompile(`insufficient balance|魔粒不足|余额不足`)
 	keyFailureRe   = regexp.MustCompile(`insufficient|balance|magicube|credit|quota|rate.?limit|too many requests|free limit|limit reached|余额|欠费|魔粒|额度|限流`)
 	retryAfterRe   = regexp.MustCompile(`(?i)try again in\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?`)
+	// upstreamFlakyRe 匹配“模型本身没问题、只是这次请求打到没加载该模型的节点”的假错误，
+	// 原样重试通常即可成功（魔搭实测约 5~10% 概率命中）。
+	upstreamFlakyRe = regexp.MustCompile(`(?i)invalid model id|has no provider supported`)
 )
 
 type KeyState struct {
@@ -839,6 +842,15 @@ func IsKeyFailure(status int, body string) bool {
 		return true
 	}
 	return status >= 400 && status < 500 && keyFailureRe.MatchString(strings.ToLower(body))
+}
+
+// IsFlakyUpstream 判断上游错误是否属于“与本次请求内容无关、重试即可恢复”的瞬时故障。
+// 这类错误不能计入 key 冷却（key 本身没问题），但值得换个 key 或原样重试。
+func IsFlakyUpstream(status int, body string) bool {
+	if status != 400 && status != 404 && status != 422 {
+		return false
+	}
+	return upstreamFlakyRe.MatchString(body)
 }
 
 func IsInsufficient(reason string) bool {

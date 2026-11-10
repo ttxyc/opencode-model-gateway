@@ -403,6 +403,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, requestID, p
 	var lastBody string
 	attempts := 0
 	retries := 0
+	flakyRetries := 0
+	const maxFlakyRetries = 3
 	for attempts <= s.cfg.Limits.MaxRetries {
 		key, err := s.router.Pick(r.Context(), pid, tried)
 		if err != nil {
@@ -474,8 +476,25 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, requestID, p
 				"status": resp.StatusCode, "message": logx.Redact(lastBody, 300),
 			})
 		}
-		retryable := router.IsKeyFailure(resp.StatusCode, lastBody) || (resp.StatusCode >= 500 && resp.StatusCode <= 599)
-		if !retryable || attempts > s.cfg.Limits.MaxRetries || len(tried) >= len(s.router.Keys(pid)) {
+		flaky := router.IsFlakyUpstream(resp.StatusCode, lastBody)
+		retryable := flaky || router.IsKeyFailure(resp.StatusCode, lastBody) ||
+			(resp.StatusCode >= 500 && resp.StatusCode <= 599)
+		if !retryable {
+			break
+		}
+		if flaky {
+			// 该错误与 key/请求内容无关（只是这次打到了没加载该模型的节点）：
+			// 不占用常规重试预算，先换 key，全部 key 都试过就短暂等待后重来。
+			flakyRetries++
+			if flakyRetries > maxFlakyRetries {
+				break
+			}
+			attempts--
+			if len(tried) >= len(s.router.Keys(pid)) {
+				tried = map[string]bool{}
+				time.Sleep(200 * time.Millisecond)
+			}
+		} else if attempts > s.cfg.Limits.MaxRetries || len(tried) >= len(s.router.Keys(pid)) {
 			break
 		}
 		retries++

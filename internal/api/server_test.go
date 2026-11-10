@@ -19,9 +19,10 @@ import (
 )
 
 type upstreamState struct {
-	mu   sync.Mutex
-	keys []string
-	bad  map[string]bool
+	mu    sync.Mutex
+	keys  []string
+	bad   map[string]bool
+	flaky int
 }
 
 func (u *upstreamState) add(k string) {
@@ -51,7 +52,16 @@ func newTestServer(t *testing.T) (*httptest.Server, *upstreamState, *config.Conf
 			up.add(key)
 			up.mu.Lock()
 			bad := up.bad[key]
+			flaky := up.flaky > 0
+			if flaky {
+				up.flaky--
+			}
 			up.mu.Unlock()
+			if flaky {
+				w.WriteHeader(400)
+				_, _ = w.Write([]byte(`{"error":{"message":"Invalid model id: deepseek-ai/DeepSeek-V4.1-Flash-1017"}}`))
+				return
+			}
 			if bad {
 				w.WriteHeader(402)
 				_, _ = w.Write([]byte(`{"error":{"message":"insufficient balance"}}`))
@@ -248,5 +258,21 @@ func TestExportKeys(t *testing.T) {
 	}
 	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.ClientToken, ""); code != 401 {
 		t.Fatalf("expected admin auth, got %d", code)
+	}
+}
+
+// TestFlakyModelIdRetry 覆盖魔搭偶发的 "Invalid model id" 假错误：
+// 400 响应本身不代表 key 或模型有问题，网关应换 key 重试并成功返回。
+func TestFlakyModelIdRetry(t *testing.T) {
+	ts, up, cfg, _ := newTestServer(t)
+	up.mu.Lock()
+	up.flaky = 3
+	up.mu.Unlock()
+	code, body, _ := do(t, "POST", ts.URL+"/p/modelscope/v1/chat/completions", cfg.ClientToken, `{"model":"deepseek-ai/DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, `"content":"ok"`) {
+		t.Fatalf("flaky retry %d %s", code, body)
+	}
+	if strings.Contains(body, "Invalid model id") {
+		t.Fatalf("flaky error leaked to client: %s", body)
 	}
 }
