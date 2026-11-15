@@ -122,10 +122,14 @@ const state = { token: localStorage.getItem("gw_admin_token") || "", data: null,
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtBalance(v){return v===null||v===undefined?"—":Number(v).toLocaleString();}
 function fmtTime(v){if(!v)return"—";const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString();}
-function tag(k){
+function tag(k, supported=true){
   if(k.exhausted) return '<span class="tag bad">耗尽</span>';
   if(k.cooldownUntil) return '<span class="tag warn">冷却</span>';
-  if(k.balance!==null&&k.balance!==undefined) return '<span class="tag ok">可用</span>';
+  if(k.balance!==null&&k.balance!==undefined){
+    if(Number(k.balance)<=0) return '<span class="tag bad">耗尽</span>';
+    return '<span class="tag ok">可用</span>';
+  }
+  if(!supported) return '<span class="tag">不适用</span>';
   return '<span class="tag">未知</span>';
 }
 
@@ -154,8 +158,8 @@ function render(){
         <tbody>
         ${(p.keys||[]).map(k=>`<tr>
           <td class="mono">${esc(k.key)}</td>
-          <td>${fmtBalance(k.balance)}</td>
-          <td>${tag(k)} ${k.balanceError?`<span class="muted small">${esc(k.balanceError)}</span>`:""}</td>
+          <td>${p.balanceSupported===false?'<span class="muted">不适用</span>':fmtBalance(k.balance)}</td>
+          <td>${tag(k, p.balanceSupported!==false)} ${k.balanceError?`<span class="muted small">${esc(k.balanceError)}</span>`:""}</td>
           <td style="text-align:right"><button class="danger small" data-del="${esc(p.id)}" data-hash="${esc(k.keyHash)}">删除</button></td>
         </tr>`).join("") || '<tr><td colspan="4" class="muted">暂无 key</td></tr>'}
         </tbody>

@@ -26,6 +26,8 @@ const (
 	KindModelScope = "modelscope"
 	KindCline      = "cline"
 	KindAtria      = "atria"
+	KindAMD        = "amd"
+	KindDeepSeek   = "deepseek"
 )
 
 var (
@@ -35,6 +37,10 @@ var (
 	// upstreamFlakyRe 匹配“模型本身没问题、只是这次请求打到没加载该模型的节点”的假错误，
 	// 原样重试通常即可成功（魔搭实测约 5~10% 概率命中）。
 	upstreamFlakyRe = regexp.MustCompile(`(?i)invalid model id|has no provider supported`)
+
+	// msExhaustedGrace 是“判定魔粒不足”到“允许按余额自动解封”的冷静期。
+	// 上游偶发 429 insufficient balance 时余额接口可能还没归零，立即解封会来回抖动。
+	msExhaustedGrace = 60 * time.Second
 )
 
 type KeyState struct {
@@ -51,6 +57,7 @@ type msState struct {
 	Current      string
 	Since        time.Time
 	Exhausted    map[string]bool
+	ExhaustedAt  map[string]time.Time
 	AllExhausted bool
 	LastProbe    time.Time
 	Initialized  bool
@@ -71,12 +78,13 @@ type Router struct {
 }
 
 type ProviderStatus struct {
-	ID             string      `json:"id"`
-	Label          string      `json:"label"`
-	Keys           []KeyStatus `json:"keys"`
-	CurrentKey     string      `json:"currentKey,omitempty"`
-	CurrentKeyHash string      `json:"currentKeyHash,omitempty"`
-	AllExhausted   bool        `json:"allExhausted,omitempty"`
+	ID               string      `json:"id"`
+	Label            string      `json:"label"`
+	Keys             []KeyStatus `json:"keys"`
+	CurrentKey       string      `json:"currentKey,omitempty"`
+	CurrentKeyHash   string      `json:"currentKeyHash,omitempty"`
+	AllExhausted     bool        `json:"allExhausted,omitempty"`
+	BalanceSupported bool        `json:"balanceSupported"`
 }
 
 type KeyStatus struct {
@@ -107,7 +115,7 @@ func New(cfg *config.Config, log *logx.Logger) *Router {
 		},
 		keys:   map[string][]string{},
 		states: map[string]map[string]*KeyState{},
-		ms:     msState{Exhausted: map[string]bool{}},
+		ms:     msState{Exhausted: map[string]bool{}, ExhaustedAt: map[string]time.Time{}},
 	}
 	r.loadPersistedState()
 	return r
@@ -304,6 +312,7 @@ func (r *Router) RefreshProvider(ctx context.Context, provider string, force boo
 			ch <- result{key: k, balance: b, err: err}
 		}(key)
 	}
+	var recovered []string
 	for range keys {
 		res := <-ch
 		r.mu.Lock()
@@ -318,14 +327,47 @@ func (r *Router) RefreshProvider(ctx context.Context, provider string, force boo
 			s.Balance = res.balance
 			s.BalanceError = ""
 			s.BalanceFromDisk = false
+			// 到账后自动解封：以前失败判定过“魔粒不足”的 key，只要实时余额 > 0
+			// 就撤销 exhausted 标记，否则管理页会一直显示“耗尽”且不再被选中。
+			// 刚被判定的 key 有 60s 冷静期，避免“余额显示 >0、实际请求仍 429”的抖动。
+			if r.Kind(provider) == KindModelScope && res.balance != nil && *res.balance > 0 {
+				if h := Hash(res.key); r.ms.Exhausted[h] {
+					markedAt := r.ms.ExhaustedAt[h]
+					if markedAt.IsZero() || time.Since(markedAt) >= msExhaustedGrace {
+						delete(r.ms.Exhausted, h)
+						delete(r.ms.ExhaustedAt, h)
+						recovered = append(recovered, res.key)
+					}
+				}
+			}
 		}
 		r.mu.Unlock()
+	}
+	if len(recovered) > 0 {
+		r.mu.Lock()
+		liveKeys := append([]string(nil), r.loadKeysLocked(KindModelScope)...)
+		picked := r.bestMSLocked(liveKeys, r.ms.Exhausted, true)
+		if picked != "" {
+			r.ms.AllExhausted = false
+			if r.ms.Current == "" || r.ms.Exhausted[Hash(r.ms.Current)] || !contains(liveKeys, r.ms.Current) {
+				r.ms.Current = picked
+				r.ms.Since = time.Now()
+			}
+		}
+		r.mu.Unlock()
+		if r.log != nil {
+			r.log.Info("ms_key_recovered", map[string]any{"keys": len(recovered), "current": Mask(picked)})
+		}
 	}
 	r.writeState()
 }
 
 func (r *Router) noBalance(provider string) bool {
-	return r.Kind(provider) != KindModelScope && r.Kind(provider) != KindCline
+	switch r.Kind(provider) {
+	case KindModelScope, KindCline, KindAMD, KindDeepSeek:
+		return false
+	}
+	return true
 }
 
 func (r *Router) fetchBalance(ctx context.Context, provider, key string) (*float64, error) {
@@ -386,6 +428,60 @@ func (r *Router) fetchBalance(ctx context.Context, provider, key string) (*float
 			return nil, errors.New("unexpected balance payload")
 		}
 		return body.Data.Balance, nil
+	}
+	if r.Kind(provider) == KindAMD {
+		url := os.Getenv("KEY_ROUTER_AMD_USAGE_URL")
+		if url == "" {
+			url = strings.TrimRight(r.cfg.Providers[provider].BaseURL, "/") + "/usage"
+		}
+		var body struct {
+			Limit  *float64 `json:"daily_cost_limit_usd"`
+			Remain *float64 `json:"daily_cost_remaining_usd"`
+		}
+		if err := r.getJSON(ctx, client, url, key, &body); err != nil {
+			return nil, err
+		}
+		if body.Remain == nil {
+			return nil, errors.New("unexpected amd usage payload")
+		}
+		if body.Limit != nil && *body.Limit == 0 {
+			return nil, errors.New("amd daily cost limit is 0")
+		}
+		return body.Remain, nil
+	}
+	if r.Kind(provider) == KindDeepSeek {
+		url := os.Getenv("KEY_ROUTER_DEEPSEEK_BALANCE_URL")
+		if url == "" {
+			root := strings.TrimSuffix(strings.TrimRight(r.cfg.Providers[provider].BaseURL, "/"), "/v1")
+			url = root + "/user/balance"
+		}
+		var body struct {
+			Infos []struct {
+				Currency string  `json:"currency"`
+				Total    *string `json:"total_balance"`
+			} `json:"balance_infos"`
+		}
+		if err := r.getJSON(ctx, client, url, key, &body); err != nil {
+			return nil, err
+		}
+		if len(body.Infos) == 0 {
+			return nil, errors.New("unexpected deepseek balance payload")
+		}
+		info := body.Infos[0]
+		for _, v := range body.Infos {
+			if v.Currency == "CNY" {
+				info = v
+				break
+			}
+		}
+		if info.Total == nil {
+			return nil, errors.New("unexpected deepseek balance payload")
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(*info.Total), 64)
+		if err != nil {
+			return nil, errors.New("unexpected deepseek balance payload")
+		}
+		return &v, nil
 	}
 	return nil, nil
 }
@@ -580,6 +676,7 @@ func (r *Router) probeMSRecovery(ctx context.Context) (string, error) {
 		return "", errMSExhausted
 	}
 	delete(r.ms.Exhausted, Hash(picked))
+	delete(r.ms.ExhaustedAt, Hash(picked))
 	r.ms.AllExhausted = false
 	r.ms.Current = picked
 	r.ms.Since = time.Now()
@@ -600,6 +697,7 @@ func (r *Router) reselectAfterExhaust(ctx context.Context, key, reason string) s
 		st.BalanceError = ""
 	}
 	r.ms.Exhausted[Hash(key)] = true
+	r.ms.ExhaustedAt[Hash(key)] = time.Now()
 	exclude := copyExcluded(r.ms.Exhausted)
 	r.mu.Unlock()
 
@@ -869,7 +967,7 @@ func (r *Router) ValidateKey(ctx context.Context, provider, key string) (*float6
 	if _, ok := r.cfg.Providers[provider]; !ok {
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
-	if r.Kind(provider) == KindModelScope || r.Kind(provider) == KindCline {
+	if !r.noBalance(provider) {
 		return r.fetchBalance(ctx, provider, key)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.cfg.Providers[provider].BaseURL+"/models", nil)
@@ -1038,7 +1136,7 @@ func (r *Router) Status() []ProviderStatus {
 func (r *Router) statusLocked() []ProviderStatus {
 	var out []ProviderStatus
 	for id := range r.cfg.Providers {
-		ps := ProviderStatus{ID: id, Label: r.cfg.Providers[id].Label}
+		ps := ProviderStatus{ID: id, Label: r.cfg.Providers[id].Label, BalanceSupported: !r.noBalance(id)}
 		for _, k := range r.loadKeysLocked(id) {
 			s := r.stateLocked(id, k)
 			ks := KeyStatus{

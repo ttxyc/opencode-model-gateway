@@ -288,3 +288,122 @@ func TestRefreshRetriesAfterAllBalancesUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestExhaustedKeyRecoversWhenBalanceArrives(t *testing.T) {
+	balances := map[string]float64{
+		"ms-good-key-0001": 100, "ms-good-key-0002": 0,
+		"sk_cline_key_0001": 50, "sk_cline_key_0002": 500,
+	}
+	r, _, closeFn := testRouter(t, balances)
+	defer closeFn()
+	ctx := context.Background()
+	if _, err := r.Ensure(ctx, "modelscope"); err != nil {
+		t.Fatal(err)
+	}
+	// 0002 判定魔粒不足（记录标记时间），0001 不受影响。
+	_ = r.ReportFailure(ctx, "modelscope", "ms-good-key-0002", 429, "HTTP 429: insufficient balance")
+	r.mu.Lock()
+	if !r.ms.Exhausted[Hash("ms-good-key-0002")] {
+		r.mu.Unlock()
+		t.Fatal("0002 should be exhausted")
+	}
+	r.mu.Unlock()
+	// 冷静期内即使余额到账也不解封。
+	balances["ms-good-key-0002"] = 270
+	r.RefreshProvider(ctx, "modelscope", true)
+	r.mu.Lock()
+	stillMarked := r.ms.Exhausted[Hash("ms-good-key-0002")]
+	r.mu.Unlock()
+	if !stillMarked {
+		t.Fatal("must not recover inside grace period")
+	}
+	// 冷静期过后余额 > 0 自动解封，重新参与选 key。
+	r.mu.Lock()
+	r.ms.ExhaustedAt[Hash("ms-good-key-0002")] = time.Now().Add(-2 * msExhaustedGrace)
+	r.mu.Unlock()
+	r.RefreshProvider(ctx, "modelscope", true)
+	r.mu.Lock()
+	recovered := !r.ms.Exhausted[Hash("ms-good-key-0002")]
+	r.mu.Unlock()
+	if !recovered {
+		t.Fatal("0002 should recover after grace period when balance > 0")
+	}
+	k, err := r.Ensure(ctx, "modelscope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k != "ms-good-key-0001" {
+		t.Fatalf("current healthy key should stay sticky, got %q", k)
+	}
+	// 解封后的 key 必须重新进入候选池：当前 key 失败时能切过去。
+	_ = r.ReportFailure(ctx, "modelscope", "ms-good-key-0001", 429, "HTTP 429: insufficient balance")
+	next, err := r.Ensure(ctx, "modelscope")
+	if err != nil || next != "ms-good-key-0002" {
+		t.Fatalf("recovered key should be selectable, got %q err=%v", next, err)
+	}
+}
+
+func TestAMDAndDeepSeekBalances(t *testing.T) {
+	home := t.TempDir()
+	p := config.DefaultPaths(home)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/amd/v1/usage":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"daily_cost_limit_usd": 1.0, "daily_cost_remaining_usd": 0.75,
+			})
+		case "/ds/user/balance":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"is_available": true,
+				"balance_infos": []any{
+					map[string]any{"currency": "USD", "total_balance": "99.00"},
+					map[string]any{"currency": "CNY", "total_balance": "6.24"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Home: home, Bind: "127.0.0.1", Port: 8788,
+		ClientToken: "client-token-1234567890", AdminToken: "admin-token-1234567890",
+		Providers: map[string]*config.Provider{
+			"amd":      {ID: "amd", Label: "amd", BaseURL: srv.URL + "/amd/v1", Models: []string{"m"}},
+			"deepseek": {ID: "deepseek", Label: "ds", BaseURL: srv.URL + "/ds/v1", Models: []string{"d"}},
+			"atria":    {ID: "atria", Label: "at", BaseURL: srv.URL + "/atria/v1", Models: []string{"a"}},
+		},
+		Limits: config.Limits{MaxBodyBytes: 1024 * 1024, MaxConcurrent: 8, HeadersTimeoutMS: 5000, TotalTimeoutMS: 10000, MaxRetries: 2},
+		Paths:  p,
+	}
+	cfg.Normalize()
+	if err := os.MkdirAll(filepath.Dir(p.Keys), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keys := `{"amd":{"key":"rc-1"},"deepseek":{"key":"sk-ds"},"atria":{"keys":["atr-1"]}}`
+	if err := os.WriteFile(p.Keys, []byte(keys), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log, _ := logx.New(p.Logs, 1024*1024, 2)
+	r := New(cfg, log)
+	ctx := context.Background()
+	r.RefreshProvider(ctx, "amd", true)
+	r.RefreshProvider(ctx, "deepseek", true)
+	r.RefreshProvider(ctx, "atria", true)
+	status := map[string]ProviderStatus{}
+	for _, ps := range r.Status() {
+		status[ps.ID] = ps
+	}
+	amd := status["amd"]
+	if !amd.BalanceSupported || len(amd.Keys) != 1 || amd.Keys[0].Balance == nil || *amd.Keys[0].Balance != 0.75 {
+		t.Fatalf("amd balance not fetched: %+v", amd)
+	}
+	ds := status["deepseek"]
+	if !ds.BalanceSupported || len(ds.Keys) != 1 || ds.Keys[0].Balance == nil || *ds.Keys[0].Balance != 6.24 {
+		t.Fatalf("deepseek balance not fetched: %+v", ds)
+	}
+	at := status["atria"]
+	if at.BalanceSupported {
+		t.Fatalf("atria should not claim balance support: %+v", at)
+	}
+}
