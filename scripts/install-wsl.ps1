@@ -11,15 +11,45 @@ if (-not ($list -split "`r?`n" | Where-Object { $_.Trim() -eq $Distro })) { thro
 
 New-Item -ItemType Directory -Force -Path "$DataHome\bin" | Out-Null
 $hostSh = @'
-#!/bin/sh
-set -e
-ip="$(ip route | awk '/^default/ {print $3; exit}')"
-[ -n "$ip" ] || exit 0
+#!/bin/bash
+# opencode-gateway-host: point opencode-gateway.local at the Windows host.
+# Uses only /proc/net/route + bash builtins; no iproute2/awk/hostname/grep/cat required.
+set -u
+
+hex=""
+while read -r iface dest gw rest; do
+  if [ "$dest" = "00000000" ] && [ -n "$gw" ]; then
+    hex="$gw"
+    break
+  fi
+done < /proc/net/route
+
+[ -n "$hex" ] || exit 0
+[ "${#hex}" -eq 8 ] || exit 0
+
+# /proc/net/route gateway is little-endian hex: 01601EAC -> 172.30.96.1
+a=$((16#${hex:6:2}))
+b=$((16#${hex:4:2}))
+c=$((16#${hex:2:2}))
+d=$((16#${hex:0:2}))
+ip="$a.$b.$c.$d"
+
 tmp="/tmp/opencode-gateway-hosts.$$"
-grep -v 'opencode-gateway.local' /etc/hosts > "$tmp" 2>/dev/null || true
+if command -v grep >/dev/null 2>&1; then
+  grep -v 'opencode-gateway.local' /etc/hosts > "$tmp" 2>/dev/null || true
+else
+  while IFS= read -r line; do
+    case "$line" in
+      *opencode-gateway.local*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < /etc/hosts > "$tmp"
+fi
 printf '%s opencode-gateway.local\n' "$ip" >> "$tmp"
-cat "$tmp" > /etc/hosts
-rm -f "$tmp"
+while IFS= read -r line; do
+  printf '%s\n' "$line"
+done < "$tmp" > /etc/hosts
+rm -f "$tmp" 2>/dev/null || true
 '@
 $confSh = @'
 #!/bin/sh
