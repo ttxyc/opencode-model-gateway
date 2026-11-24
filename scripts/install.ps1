@@ -152,11 +152,14 @@ if (-not $SkipFirewall) {
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPaths = @()
+$desktop = [Environment]::GetFolderPath("Desktop")
 $public = [Environment]::GetFolderPath("CommonDesktopDirectory")
 if (-not $public) { $public = "C:\Users\Public\Desktop" }
-$shortcutPaths += (Join-Path $public "opencode Gateway.lnk")
-$desktop = [Environment]::GetFolderPath("Desktop")
-if ($desktop) { $shortcutPaths += (Join-Path $desktop "opencode Gateway.lnk") }
+$publicLnk = Join-Path $public "opencode Gateway.lnk"
+if (Test-Path $publicLnk) {
+  try { Remove-Item $publicLnk -Force } catch { Write-Host "WARN: could not remove $publicLnk" -ForegroundColor Yellow }
+}
+if ($desktop) { $shortcutPaths += (Join-Path $desktop "opencode Gateway.lnk") } else { $shortcutPaths += $publicLnk }
 foreach ($sp in $shortcutPaths) {
   $sc = $shell.CreateShortcut($sp)
   $sc.TargetPath = "$env:SystemRoot\System32\wscript.exe"
