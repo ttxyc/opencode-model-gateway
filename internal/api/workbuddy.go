@@ -394,6 +394,33 @@ func (s *Server) handleAdminWorkBuddy(w http.ResponseWriter, r *http.Request, re
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
 		return http.StatusOK
+
+	case "/admin/api/workbuddy/checkin":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		var body struct {
+			Region      string `json:"region"`
+			ID          string `json:"id"`
+			DryRun      bool   `json:"dryRun"`
+			DeviceToken string `json:"deviceToken"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, "JSON 无效", "invalid_request_error", "invalid_json", requestID)
+			return http.StatusBadRequest
+		}
+		region := strings.TrimSpace(body.Region)
+		if region == "" {
+			region = "all"
+		}
+		res, err := s.wb.RunCheckin(r.Context(), region, strings.TrimSpace(body.ID), strings.TrimSpace(body.DeviceToken), body.DryRun)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "workbuddy_checkin_failed", requestID)
+			return http.StatusBadRequest
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": res.OK, "result": res})
+		return http.StatusOK
 	}
 	writeError(w, http.StatusNotFound, "未知 WorkBuddy 管理接口", "invalid_request_error", "not_found", requestID)
 	return http.StatusNotFound
