@@ -5,6 +5,7 @@ package platform
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/ttxyc/opencode-model-gateway/internal/installer"
 
+	"github.com/ttxyc/opencode-model-gateway/internal/api"
 	"github.com/ttxyc/opencode-model-gateway/internal/app"
 	"github.com/ttxyc/opencode-model-gateway/internal/config"
 	"github.com/ttxyc/opencode-model-gateway/internal/logx"
@@ -349,6 +351,34 @@ func PrepareApply(home, newPath string) error {
 	return nil
 }
 
+func writeApplyProgress(home, phase, message, errText string, running bool, version string) {
+	if home == "" {
+		return
+	}
+	now := time.Now()
+	p := api.UpdateProgress{
+		Running: running, Phase: phase, Message: message, Error: errText,
+		Version: version, UpdatedAt: &now,
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(home, "updates")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	path := filepath.Join(dir, "apply-progress.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(path)
+		_ = os.Rename(tmp, path)
+	}
+}
+
 func ApplyUpdate(home, newPath string) error {
 	log, _ := logx.New(filepath.Join(home, "logs"), 5*1024*1024, 3)
 	logf := func(msg string, fields map[string]any) {
@@ -356,31 +386,42 @@ func ApplyUpdate(home, newPath string) error {
 			log.Info(msg, fields)
 		}
 	}
+	version := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(newPath), "gateway-"), ".exe")
+	if !strings.ContainsAny(version, "0123456789") {
+		version = ""
+	}
+	fail := func(phase, message string, err error) error {
+		writeApplyProgress(home, phase, message, err.Error(), false, version)
+		logf("update_failed", map[string]any{"phase": phase, "error": err.Error()})
+		return err
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
-		return err
+		return fail("failed", "连接服务管理器失败", err)
 	}
 	defer m.Disconnect()
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		return err
+		return fail("failed", "打开服务失败", err)
 	}
 	defer s.Close()
 	conf, err := s.Config()
 	if err != nil {
-		return err
+		return fail("failed", "读取服务配置失败", err)
 	}
 	exe := serviceExe(conf.BinaryPathName)
 	if exe == "" {
 		if exe, err = os.Executable(); err != nil {
-			return err
+			return fail("failed", "定位服务程序失败", err)
 		}
 	}
 	cfg, err := config.Load(home)
 	if err != nil {
-		return err
+		return fail("failed", "读取网关配置失败", err)
 	}
 	logf("update_start", map[string]any{"exe": exe, "new": newPath})
+	writeApplyProgress(home, "stopping", "停止旧服务…", "", true, version)
 	_, _ = s.Control(svc.Stop)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -389,26 +430,29 @@ func ApplyUpdate(home, newPath string) error {
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+	writeApplyProgress(home, "replacing", "替换程序…", "", true, version)
 	backup := exe + ".old"
 	_ = os.Remove(backup)
 	if err := os.Rename(exe, backup); err != nil {
 		logf("update_rename_failed", map[string]any{"error": err.Error()})
 		_ = s.Start()
-		return err
+		return fail("failed", "替换程序失败", err)
 	}
 	if err := copyFile(newPath, exe); err != nil {
 		_ = os.Rename(backup, exe)
 		_ = s.Start()
 		logf("update_copy_failed", map[string]any{"error": err.Error()})
-		return err
+		return fail("failed", "复制新程序失败", err)
 	}
+	writeApplyProgress(home, "starting", "启动新服务…", "", true, version)
 	if err := s.Start(); err != nil {
 		_ = os.Remove(exe)
 		_ = os.Rename(backup, exe)
 		_ = s.Start()
 		logf("update_start_failed", map[string]any{"error": err.Error()})
-		return err
+		return fail("failed", "启动新服务失败", err)
 	}
+	writeApplyProgress(home, "health", "等待新服务健康检查…", "", true, version)
 	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)
 	ok := false
 	hc := &http.Client{Timeout: 3 * time.Second}
@@ -430,8 +474,9 @@ func ApplyUpdate(home, newPath string) error {
 		_ = os.Rename(backup, exe)
 		_ = s.Start()
 		logf("update_health_failed", map[string]any{})
-		return errors.New("new version failed health check; rolled back")
+		return fail("failed", "新版本健康检查失败，已回滚", errors.New("new version failed health check; rolled back"))
 	}
+	writeApplyProgress(home, "done", "更新完成", "", false, version)
 	logf("update_ok", map[string]any{})
 	return nil
 }

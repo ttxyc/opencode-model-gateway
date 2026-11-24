@@ -22,6 +22,10 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
 .muted{color:var(--muted)}.small{font-size:12px}.err{color:var(--bad);white-space:pre-wrap}#importMsg{white-space:pre-wrap}.ok{color:var(--ok)}
 .hidden{display:none}.banner{padding:9px 12px;border-radius:8px;background:#1b2333;border:1px solid #2b3a56;margin-bottom:12px}
+.progress-track{height:8px;background:#0d1016;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.progress-bar{height:100%;width:0;background:var(--accent);transition:width .2s,background .2s}
+.progress-bar.indeterminate{width:30%;animation:indeterminate 1.2s linear infinite}
+@keyframes indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
 </style>
 </head>
 <body>
@@ -112,12 +116,16 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
         </div>
       </div>
       <div id="updateMsg" class="small" style="margin-top:8px"></div>
+      <div id="updateProgressWrap" class="hidden" style="margin-top:10px">
+        <div class="progress-track"><div id="updateProgressBar" class="progress-bar"></div></div>
+        <div id="updateProgressText" class="muted small" style="margin-top:6px"></div>
+      </div>
     </div>
   </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null, wb: null, wbPoll: null };
+const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null, wb: null, wbPoll: null, updatePoll: null, updateRestartChecks: 0 };
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtBalance(v){return v===null||v===undefined?"—":Number(v).toLocaleString();}
@@ -174,7 +182,9 @@ function render(){
     state.update = u;
     $("updateText").textContent = `当前 ${u.current||d.version}${u.latest?` · 最新 ${u.latest}`:""}${u.error?` · ${u.error}`:""}`;
     $("applyUpdateBtn").disabled = !u.available;
-    $("updateMsg").textContent = u.available ? "发现新版本，可安装（服务会短暂重启）" : "已是最新版本";
+    if(!state.updatePoll && $("updateProgressWrap").classList.contains("hidden")){
+      $("updateMsg").textContent = u.available ? "发现新版本，可安装（服务会短暂重启）" : "已是最新版本";
+    }
   }
 }
 
@@ -273,6 +283,7 @@ async function load(){
   const d = await api("/admin/api/status");
   state.data = d; $("tokenBox").classList.add("hidden"); $("main").classList.remove("hidden"); render();
   await loadWB();
+  await loadUpdateProgress();
 }
 
 async function addKey(){
@@ -294,8 +305,103 @@ async function deleteKey(provider,hash){
   catch(e){ alert(e.message); }
 }
 
+const UPDATE_LABELS = {checking:"检查更新",manifest:"读取更新清单",downloading:"下载更新",verifying:"校验更新",applying:"应用更新",stopping:"停止旧服务",replacing:"替换程序",starting:"启动新服务",health:"健康检查",restarting:"服务重启中",done:"更新完成",failed:"更新失败",idle:"空闲"};
+
+function fmtBytes(n){
+  if(!n) return "0 B";
+  const units=["B","KB","MB","GB"];
+  let v=Number(n), i=0;
+  while(v>=1024 && i<units.length-1){ v/=1024; i++; }
+  return v.toFixed(i?1:0)+" "+units[i];
+}
+
+function renderUpdateProgress(p){
+  const wrap=$("updateProgressWrap"), bar=$("updateProgressBar"), text=$("updateProgressText");
+  const phase=p.phase||"idle";
+  if(phase==="idle" && !p.running && !p.error){ wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  const label=UPDATE_LABELS[phase]||phase;
+  const detail=String(p.message||"");
+  let msg = detail && detail.includes(label) ? detail : (detail ? label + " · " + detail : label);
+  if(p.totalBytes>0){ msg += ` · ${fmtBytes(p.downloadedBytes||0)} / ${fmtBytes(p.totalBytes)} (${Number(p.percent||0).toFixed(1)}%)`; }
+  else if(p.downloadedBytes>0){ msg += ` · ${fmtBytes(p.downloadedBytes)}`; }
+  if(p.error) msg += " · " + p.error;
+  text.textContent=msg;
+  bar.style.background = phase==="failed" ? "var(--bad)" : "var(--accent)";
+  if(p.running && !(p.totalBytes>0 && phase==="downloading")){
+    bar.classList.add("indeterminate");
+    bar.style.width="30%";
+  }else{
+    bar.classList.remove("indeterminate");
+    const width = p.totalBytes>0 ? Math.min(100,Number(p.percent||0)) : ((phase==="done"||phase==="failed")?100:0);
+    bar.style.width=width+"%";
+  }
+}
+
+function stopUpdatePoll(){
+  if(state.updatePoll){ clearInterval(state.updatePoll); state.updatePoll=null; }
+  $("checkUpdateBtn").disabled=false;
+  $("applyUpdateBtn").disabled = !(state.update && state.update.available);
+}
+
+function startUpdatePoll(){
+  if(state.updatePoll) clearInterval(state.updatePoll);
+  state.updateRestartChecks=0;
+  state.updatePoll=setInterval(pollUpdateProgress,1000);
+  pollUpdateProgress().catch(()=>{});
+}
+
+async function pollUpdateProgress(){
+  try{
+    const p=await api("/admin/api/update/progress");
+    state.updateRestartChecks=0;
+    renderUpdateProgress(p);
+    if(!p.running && (p.phase==="done"||p.phase==="failed"||p.phase==="idle")){
+      stopUpdatePoll();
+      if(p.phase==="done"){
+        $("updateMsg").className="ok small"; $("updateMsg").textContent="更新完成，正在刷新…";
+        setTimeout(()=>location.reload(),1500);
+      }else if(p.phase==="failed"){
+        $("updateMsg").className="err small"; $("updateMsg").textContent="更新失败："+(p.error||p.message||"请查看网关日志");
+      }else{
+        $("updateMsg").className="muted small"; $("updateMsg").textContent="已是最新版本";
+      }
+    }
+  }catch(e){
+    state.updateRestartChecks=(state.updateRestartChecks||0)+1;
+    renderUpdateProgress({phase:"restarting",running:true,message:"服务重启中，等待恢复…"});
+    try{
+      const h=await fetch("/healthz",{cache:"no-store"});
+      if(h.ok) state.updateRestartChecks++;
+      else state.updateRestartChecks=0;
+    }catch(_){ state.updateRestartChecks=0; }
+    if(state.updateRestartChecks>=2){
+      stopUpdatePoll();
+      $("updateMsg").className="ok small"; $("updateMsg").textContent="服务已恢复，正在刷新…";
+      setTimeout(()=>location.reload(),1200);
+    }
+  }
+}
+
+async function loadUpdateProgress(){
+  try{
+    const p=await api("/admin/api/update/progress");
+    renderUpdateProgress(p);
+    if(p.running){
+      $("updateMsg").className="muted small"; $("updateMsg").textContent="更新进行中…";
+      startUpdatePoll();
+    }else if(p.phase==="failed" && p.error){
+      $("updateMsg").className="err small"; $("updateMsg").textContent="上次更新失败："+p.error;
+    }else if(p.phase==="done"){
+      $("updateMsg").className="ok small"; $("updateMsg").textContent="上次更新已完成";
+    }
+  }catch(_){}
+}
+
 async function checkUpdate(){
-  $("checkUpdateBtn").disabled=true; $("updateMsg").textContent="检查中…";
+  if(state.updatePoll) return;
+  $("updateProgressWrap").classList.add("hidden");
+  $("checkUpdateBtn").disabled=true; $("updateMsg").className="muted small"; $("updateMsg").textContent="检查中…";
   try{ const u=await api("/admin/api/update/check"); state.data.update=u; render(); }
   catch(e){ $("updateMsg").className="err small"; $("updateMsg").textContent=e.message; }
   finally{ $("checkUpdateBtn").disabled=false; }
@@ -303,8 +409,17 @@ async function checkUpdate(){
 
 async function applyUpdate(){
   if(!confirm("安装更新并重启服务？")) return;
-  try{ await api("/admin/api/update/apply",{method:"POST"}); $("updateMsg").className="ok small"; $("updateMsg").textContent="更新已开始，稍后刷新页面"; }
-  catch(e){ $("updateMsg").className="err small"; $("updateMsg").textContent=e.message; }
+  $("applyUpdateBtn").disabled=true; $("checkUpdateBtn").disabled=true;
+  $("updateMsg").className="muted small"; $("updateMsg").textContent="更新已开始…";
+  renderUpdateProgress({phase:"checking",running:true,message:"已提交更新请求…"});
+  try{
+    await api("/admin/api/update/apply",{method:"POST"});
+    startUpdatePoll();
+  }catch(e){
+    $("applyUpdateBtn").disabled=false; $("checkUpdateBtn").disabled=false;
+    $("updateMsg").className="err small"; $("updateMsg").textContent=e.message;
+    if(String(e.message||"").includes("更新已在进行中")) startUpdatePoll();
+  }
 }
 
 $("loginBtn").onclick=async()=>{ state.token=$("token").value.trim(); localStorage.setItem("gw_admin_token",state.token); $("loginErr").textContent=""; try{await load();}catch(e){$("loginErr").textContent=e.message;} };

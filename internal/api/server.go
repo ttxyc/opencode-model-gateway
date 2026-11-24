@@ -40,11 +40,27 @@ type UpdateStatus struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// UpdateProgress is the live phase of an update. It is polled by the admin
+// page so a slow download or a service restart does not look like a hang.
+type UpdateProgress struct {
+	Running         bool       `json:"running"`
+	Phase           string     `json:"phase"`
+	Version         string     `json:"version,omitempty"`
+	TotalBytes      int64      `json:"totalBytes,omitempty"`
+	DownloadedBytes int64      `json:"downloadedBytes,omitempty"`
+	Percent         float64    `json:"percent,omitempty"`
+	Message         string     `json:"message,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	UpdatedAt       *time.Time `json:"updatedAt,omitempty"`
+}
+
 type UpdateManager interface {
 	Check(ctx context.Context) (UpdateStatus, error)
 	Apply(ctx context.Context) (UpdateStatus, error)
 	Enabled() bool
 	Cached() UpdateStatus
+	Progress() UpdateProgress
 }
 
 type Options struct {
@@ -778,10 +794,25 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 		}
 		writeJSON(w, http.StatusOK, st)
 		return http.StatusOK
+	case "/admin/api/update/progress":
+		if s.update == nil || !s.update.Enabled() {
+			writeError(w, http.StatusBadRequest, "自动更新未启用", "invalid_request_error", "update_disabled", requestID)
+			return http.StatusBadRequest
+		}
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 GET", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		writeJSON(w, http.StatusOK, s.update.Progress())
+		return http.StatusOK
 	case "/admin/api/update/apply":
 		if s.update == nil || !s.update.Enabled() {
 			writeError(w, http.StatusBadRequest, "自动更新未启用", "invalid_request_error", "update_disabled", requestID)
 			return http.StatusBadRequest
+		}
+		if p := s.update.Progress(); p.Running {
+			writeError(w, http.StatusConflict, "更新已在进行中", "invalid_request_error", "update_in_progress", requestID)
+			return http.StatusConflict
 		}
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

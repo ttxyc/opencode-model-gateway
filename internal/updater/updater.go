@@ -46,6 +46,10 @@ type Manager struct {
 	cached    api.UpdateStatus
 	cachedAt  time.Time
 	cachedErr error
+
+	progressMu sync.Mutex
+	progress   api.UpdateProgress
+	applyMu    sync.Mutex
 }
 
 func New(cfg *config.Config, version string, log *logx.Logger, apply func(string) error) *Manager {
@@ -74,6 +78,106 @@ func (m *Manager) Cached() api.UpdateStatus {
 		st.Error = m.cachedErr.Error()
 	}
 	return st
+}
+
+const progressFileName = "apply-progress.json"
+
+// Progress returns the live update phase. If the process was restarted during
+// an update, the helper's on-disk progress file is used so the admin page can
+// still show whether the update finished or rolled back.
+func (m *Manager) Progress() api.UpdateProgress {
+	m.progressMu.Lock()
+	p := m.progress
+	m.progressMu.Unlock()
+	if p.Running || (p.Phase != "" && p.Phase != "idle") {
+		return p
+	}
+	if fp, ok := m.readProgressFile(); ok {
+		return fp
+	}
+	if p.Phase == "" {
+		p.Phase = "idle"
+		p.Message = "空闲"
+	}
+	return p
+}
+
+func (m *Manager) setProgress(phase string, running bool, message, version string, downloaded, total int64, errText string) {
+	now := time.Now()
+	m.progressMu.Lock()
+	if m.progress.StartedAt == nil && phase != "idle" {
+		m.progress.StartedAt = &now
+	}
+	p := m.progress
+	p.Running = running
+	p.Phase = phase
+	p.Version = version
+	p.TotalBytes = total
+	p.DownloadedBytes = downloaded
+	p.Message = message
+	p.Error = errText
+	p.UpdatedAt = &now
+	if total > 0 {
+		pct := float64(downloaded) * 100 / float64(total)
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		p.Percent = float64(int(pct*100)) / 100
+	} else {
+		p.Percent = 0
+	}
+	m.progress = p
+	m.progressMu.Unlock()
+	m.writeProgressFile(p)
+}
+
+func (m *Manager) readProgressFile() (api.UpdateProgress, bool) {
+	if m.Home == "" {
+		return api.UpdateProgress{}, false
+	}
+	raw, err := os.ReadFile(filepath.Join(m.Home, "updates", progressFileName))
+	if err != nil {
+		return api.UpdateProgress{}, false
+	}
+	var p api.UpdateProgress
+	if json.Unmarshal(raw, &p) != nil || p.UpdatedAt == nil {
+		return api.UpdateProgress{}, false
+	}
+	if p.StartedAt != nil && p.StartedAt.IsZero() {
+		p.StartedAt = nil
+	}
+	if time.Since(*p.UpdatedAt) > 15*time.Minute {
+		return api.UpdateProgress{}, false
+	}
+	if p.Running && time.Since(*p.UpdatedAt) > 5*time.Minute {
+		p.Running = false
+		p.Phase = "failed"
+		p.Message = "上次更新未完成"
+		p.Error = "更新状态超时，请查看网关日志"
+	}
+	return p, true
+}
+
+func (m *Manager) writeProgressFile(p api.UpdateProgress) {
+	if m.Home == "" {
+		return
+	}
+	dir := filepath.Join(m.Home, "updates")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	raw, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := filepath.Join(dir, progressFileName+".tmp")
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, filepath.Join(dir, progressFileName))
 }
 
 func (m *Manager) Check(ctx context.Context) (api.UpdateStatus, error) {
@@ -121,74 +225,131 @@ func (m *Manager) check(ctx context.Context) (api.UpdateStatus, error) {
 }
 
 func (m *Manager) Apply(ctx context.Context) (api.UpdateStatus, error) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
+	if p := m.Progress(); p.Running {
+		return api.UpdateStatus{Current: m.Version}, errors.New("更新已在进行中")
+	}
+	m.progressMu.Lock()
+	m.progress = api.UpdateProgress{}
+	m.progressMu.Unlock()
+	m.setProgress("checking", true, "检查更新…", "", 0, 0, "")
+
 	st, err := m.Check(ctx)
 	if err != nil {
+		m.setProgress("failed", false, "检查更新失败", "", 0, 0, err.Error())
 		return st, err
 	}
 	if !st.Available {
+		m.setProgress("idle", false, "已是最新版本", st.Current, 0, 0, "")
 		return st, nil
 	}
 	// Re-fetch manifest; Check only returned status.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.ManifestURL, nil)
 	if err != nil {
+		m.setProgress("failed", false, "读取更新清单失败", st.Latest, 0, 0, err.Error())
 		return st, err
 	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.setProgress("failed", false, "读取更新清单失败", st.Latest, 0, 0, err.Error())
 		return st, err
 	}
 	var man Manifest
 	err = json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&man)
 	_ = resp.Body.Close()
 	if err != nil {
+		m.setProgress("failed", false, "解析更新清单失败", st.Latest, 0, 0, err.Error())
 		return st, err
 	}
 	if err := verifyManifest(man, m.PublicKey); err != nil {
+		m.setProgress("failed", false, "更新签名校验失败", man.Version, 0, 0, err.Error())
 		return st, err
 	}
 	dl, err := http.NewRequestWithContext(ctx, http.MethodGet, man.Asset, nil)
 	if err != nil {
+		m.setProgress("failed", false, "创建下载请求失败", man.Version, 0, 0, err.Error())
 		return st, err
 	}
 	dl.Header.Set("User-Agent", "opencode-model-gateway/"+m.Version)
 	ar, err := m.Client.Do(dl)
 	if err != nil {
+		m.setProgress("failed", false, "下载更新失败", man.Version, 0, 0, err.Error())
 		return st, err
 	}
 	defer ar.Body.Close()
 	if ar.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("asset HTTP %d", ar.StatusCode)
+		err := fmt.Errorf("asset HTTP %d", ar.StatusCode)
+		m.setProgress("failed", false, "下载更新失败", man.Version, 0, 0, err.Error())
+		return st, err
 	}
 	if err := os.MkdirAll(filepath.Join(m.Home, "updates"), 0o755); err != nil {
+		m.setProgress("failed", false, "创建更新目录失败", man.Version, 0, 0, err.Error())
 		return st, err
 	}
 	dst := filepath.Join(m.Home, "updates", "gateway-"+man.Version+".exe")
 	tmp := dst + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
+		m.setProgress("failed", false, "创建更新文件失败", man.Version, 0, 0, err.Error())
 		return st, err
+	}
+	total := ar.ContentLength
+	if total < 0 {
+		total = 0
 	}
 	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), io.LimitReader(ar.Body, 100*1024*1024))
+	pr := &progressReader{r: io.LimitReader(ar.Body, 100*1024*1024), m: m, version: man.Version, total: total}
+	_, err = io.Copy(io.MultiWriter(f, h), pr)
 	_ = f.Close()
 	if err != nil {
+		m.setProgress("failed", false, "下载更新失败", man.Version, pr.read, pr.total, err.Error())
 		return st, err
 	}
+	m.setProgress("verifying", true, "校验文件哈希…", man.Version, pr.read, pr.total, "")
 	got := hex.EncodeToString(h.Sum(nil))
 	if !strings.EqualFold(got, man.SHA256) {
 		_ = os.Remove(tmp)
-		return st, fmt.Errorf("sha256 mismatch: got %s", got)
+		err := fmt.Errorf("sha256 mismatch: got %s", got)
+		m.setProgress("failed", false, "更新文件哈希不匹配", man.Version, pr.read, pr.total, err.Error())
+		return st, err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
+		m.setProgress("failed", false, "保存更新文件失败", man.Version, pr.read, pr.total, err.Error())
 		return st, err
 	}
 	if m.ApplyFunc == nil {
-		return st, errors.New("update apply is not supported on this platform")
-	}
-	if err := m.ApplyFunc(dst); err != nil {
+		err := errors.New("update apply is not supported on this platform")
+		m.setProgress("failed", false, "当前平台不支持自动更新", man.Version, pr.read, pr.total, err.Error())
 		return st, err
 	}
+	m.setProgress("applying", true, "启动更新助手，服务即将重启…", man.Version, pr.read, pr.total, "")
+	if err := m.ApplyFunc(dst); err != nil {
+		m.setProgress("failed", false, "应用更新失败", man.Version, pr.read, pr.total, err.Error())
+		return st, err
+	}
+	m.setProgress("applying", true, "更新助手已启动，等待服务重启…", man.Version, pr.read, pr.total, "")
 	return st, nil
+}
+
+type progressReader struct {
+	r       io.Reader
+	m       *Manager
+	version string
+	total   int64
+	read    int64
+	last    time.Time
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.read += int64(n)
+	if p.last.IsZero() || time.Since(p.last) >= 200*time.Millisecond || err != nil {
+		p.m.setProgress("downloading", true, "下载 gateway.exe…", p.version, p.read, p.total, "")
+		p.last = time.Now()
+	}
+	return n, err
 }
 
 func verifyManifest(m Manifest, publicKey string) error {
