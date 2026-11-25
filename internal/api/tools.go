@@ -50,6 +50,24 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request, requestID, 
 		writeRawJSON(w, http.StatusOK, raw)
 		return http.StatusOK
 
+	case "/admin/api/tools/workbuddy/refresh-token":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		if !toolsActionMu.TryLock() {
+			writeError(w, http.StatusConflict, "已有 WorkBuddy 巡检/领取任务在进行中", "invalid_request_error", "tools_busy", requestID)
+			return http.StatusConflict
+		}
+		defer toolsActionMu.Unlock()
+		raw, err := workBuddyToolRefreshToken()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error(), "upstream_error", "tools_workbuddy_refresh_token_failed", requestID)
+			return http.StatusBadGateway
+		}
+		writeRawJSON(w, http.StatusOK, raw)
+		return http.StatusOK
+
 	case "/admin/api/tools/workbuddy/panel":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)

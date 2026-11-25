@@ -24,12 +24,14 @@ const (
 	wbClaimDir   = `D:\wsl-opencode\workbuddy-claim`
 	wbStatusFile = wbClaimDir + `\.gateway-status.json`
 	wbClaimFile  = wbClaimDir + `\.gateway-claim.json`
+	wbTokenFile  = wbClaimDir + `\.gateway-token.json`
 
 	msDir  = `D:\wsl-opencode\modelscope-auto`
 	msLogs = msDir + `\logs`
 
 	wbStatusTask  = "Tools-WorkBuddy-Status"
 	wbClaimTask   = "Tools-WorkBuddy-Claim"
+	wbTokenTask   = "Tools-WorkBuddy-RefreshToken"
 	wbPanelTask   = "Tools-WorkBuddy-Panel"
 	msRunTask     = "Tools-ModelScope-Run"
 	msRefreshTask = "Tools-ModelScope-Refresh"
@@ -173,6 +175,14 @@ echo start > "%OUT%.start"
 C:\Windows\System32\wsl.exe -d Ubuntu -- bash -lc "source $HOME/.nvm/nvm.sh >/dev/null 2>&1; cd /mnt/d/wsl-opencode/workbuddy-claim && node claim.js --apply --json" > "%OUT%" 2> "%OUT%.err"
 echo %ERRORLEVEL% > "%OUT%.done"
 `,
+		"wb-refresh-token.cmd": `@echo off
+setlocal
+set "OUT=D:\wsl-opencode\workbuddy-claim\.gateway-token.json"
+del "%OUT%" "%OUT%.err" "%OUT%.done" "%OUT%.start" >nul 2>&1
+echo start > "%OUT%.start"
+C:\Windows\System32\wsl.exe -d Ubuntu -- bash -lc "source $HOME/.nvm/nvm.sh >/dev/null 2>&1; cd /mnt/d/wsl-opencode/workbuddy-claim && node refresh-token.js --json" > "%OUT%" 2> "%OUT%.err"
+echo %ERRORLEVEL% > "%OUT%.done"
+`,
 		"ms-run.cmd": `@echo off
 setlocal
 set "DIR=D:\wsl-opencode\modelscope-auto"
@@ -202,6 +212,9 @@ sh.Run "cmd.exe /c ""C:\ProgramData\opencode-model-gateway\scripts\tools\wb-stat
 `,
 		"wb-claim.vbs": `Set sh = CreateObject("WScript.Shell")
 sh.Run "cmd.exe /c ""C:\ProgramData\opencode-model-gateway\scripts\tools\wb-claim.cmd""", 0, True
+`,
+		"wb-refresh-token.vbs": `Set sh = CreateObject("WScript.Shell")
+sh.Run "cmd.exe /c ""C:\ProgramData\opencode-model-gateway\scripts\tools\wb-refresh-token.cmd""", 0, True
 `,
 		"ms-run.vbs": `Set sh = CreateObject("WScript.Shell")
 sh.Run "cmd.exe /c ""C:\ProgramData\opencode-model-gateway\scripts\tools\ms-run.cmd""", 0, True
@@ -352,6 +365,20 @@ func workBuddyToolClaim() ([]byte, error) {
 		return nil, err
 	}
 	return runUserTaskSync(wbClaimTask, `C:\Windows\System32\wscript.exe`, `"`+toolsDir+`\wb-claim.vbs"`, wbClaimFile, u.SID)
+}
+
+func workBuddyToolRefreshToken() ([]byte, error) {
+	if _, err := os.Stat(wbClaimDir); err != nil {
+		return nil, fmt.Errorf("找不到 WorkBuddy Claim 项目: %s", wbClaimDir)
+	}
+	if _, err := os.Stat(filepath.Join(wbClaimDir, "refresh-token.js")); err != nil {
+		return nil, fmt.Errorf("找不到 refresh-token.js，请先同步 workbuddy-claim 项目")
+	}
+	u, err := interactiveUser()
+	if err != nil {
+		return nil, err
+	}
+	return runUserTaskSync(wbTokenTask, `C:\Windows\System32\wscript.exe`, `"`+toolsDir+`\wb-refresh-token.vbs"`, wbTokenFile, u.SID)
 }
 
 func workBuddyToolPanel() error {

@@ -72,6 +72,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
       <div class="row actions">
         <button class="primary" id="wbClaimBtn" disabled>领取可领</button>
         <button id="wbRefreshBtn">巡检一次</button>
+        <button id="wbRefreshTokenBtn" title="调用 WorkBuddy 刷新接口，更新 DSH 凭据里的 access/refresh token">刷新 Token</button>
         <button id="wbPanelBtn">打开完整面板</button>
       </div>
       <div id="wbMsg" class="small" style="margin-top:8px"></div>
@@ -148,7 +149,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { token: localStorage.getItem("gw_admin_token") || "", wb: null, ms: null, msPoll: null, msTick: null, msRunning: false, msStartedAt: "", msProgressPrefix: "", msLoading: false };
+const state = { token: localStorage.getItem("gw_admin_token") || "", wb: null, ms: null, msPoll: null, msTick: null, msRunning: false, msStartedAt: "", msProgressPrefix: "", msLoading: false, wbLoading: false };
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtNum(v){return v===null||v===undefined?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:2});}
@@ -156,6 +157,8 @@ function fmtDate(v){if(!v)return"—";const d=new Date(v);return isNaN(d)?String
 function fmtShortTime(v){
   if(!v)return"—";
   const s=String(v);
+  const n=Number(s);
+  if(Number.isFinite(n) && n>1e12){const d=new Date(n);if(!isNaN(d))return `${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;}
   if(/T.*Z$/i.test(s)){const d=new Date(s);if(!isNaN(d))return `${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;}
   const m=s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
   return m?`${m[2]}-${m[3]} ${m[4]}:${m[5]}`:s;
@@ -200,7 +203,12 @@ async function loadAll(){
 function wbSetMsg(text, cls){ $("wbMsg").className = (cls||"muted")+" small"; $("wbMsg").textContent = text; }
 function msSetMsg(text, cls){ $("msMsg").className = (cls||"muted")+" small"; $("msMsg").textContent = text; }
 
-async function loadWB(){
+async function loadWB(attempt){
+  attempt = attempt || 0;
+  if(state.wbLoading) return;
+  state.wbLoading = true;
+  $("wbRefreshBtn").disabled = true;
+  $("wbRefreshTokenBtn").disabled = true;
   $("wbCard").classList.add("loading");
   wbSetMsg("巡检中…（首次会启动用户会话任务，约 5–15 秒）","muted");
   try{
@@ -209,11 +217,19 @@ async function loadWB(){
     renderWB(d);
     wbSetMsg("巡检完成：" + fmtDate(d && d.session ? d.session.expiresAt : "") + " token 到期", "ok");
   }catch(e){
+    if(attempt < 5 && String(e.message).indexOf("进行中") >= 0){
+      wbSetMsg("上一次巡检还在收尾，稍后自动重试…","muted");
+      setTimeout(()=>loadWB(attempt + 1), 4000);
+      return;
+    }
     wbSetMsg("巡检失败：" + e.message, "err");
     $("wbClaimableTag").textContent = "—";
     $("wbClaimableTag").className = "tag bad";
   }finally{
+    state.wbLoading = false;
     $("wbCard").classList.remove("loading");
+    $("wbRefreshBtn").disabled = false;
+    $("wbRefreshTokenBtn").disabled = false;
   }
 }
 
@@ -287,6 +303,21 @@ async function claimWB(){
   }catch(e){
     wbSetMsg("领取失败：" + e.message, "err");
     $("wbClaimBtn").disabled = false;
+  }
+}
+
+async function refreshWBToken(){
+  $("wbRefreshTokenBtn").disabled = true;
+  wbSetMsg("正在刷新 WorkBuddy Token…","muted");
+  try{
+    const r = await api("/admin/api/tools/workbuddy/refresh-token",{method:"POST",body:"{}"});
+    if(!r || r.ok === false) throw new Error((r && r.error) || "刷新失败");
+    wbSetMsg("Token 已刷新：" + fmtDate(r.expiresAt) + " 到期，正在重新巡检…","ok");
+    await loadWB();
+  }catch(e){
+    wbSetMsg("刷新 Token 失败：" + e.message,"err");
+  }finally{
+    $("wbRefreshTokenBtn").disabled = false;
   }
 }
 
@@ -462,6 +493,7 @@ $("loginBtn").onclick = async ()=>{
 $("token").addEventListener("keydown",e=>{ if(e.key==="Enter") $("loginBtn").click(); });
 $("refreshBtn").onclick = ()=>loadAll();
 $("wbRefreshBtn").onclick = ()=>loadWB();
+$("wbRefreshTokenBtn").onclick = ()=>refreshWBToken();
 $("wbClaimBtn").onclick = ()=>claimWB();
 $("wbPanelBtn").onclick = ()=>openPanel();
 $("msRunBtn").onclick = ()=>msAction("run");
