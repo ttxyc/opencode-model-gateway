@@ -31,6 +31,10 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
 .foot{margin-top:10px;font-size:11.5px;color:#aab3c5}.side{display:flex;flex-direction:column;gap:9px}
 .mini{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px}.mini .label{font-size:11px;color:var(--muted);margin-bottom:4px}.mini .row{margin-top:6px}
 .log{background:#10141c;border:1px solid #2f3a4c;border-radius:8px;padding:9px 10px;max-height:160px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;color:#d8e0ee;line-height:1.55;white-space:pre-wrap}
+.progress{position:relative;height:8px;border-radius:999px;background:#0d1016;border:1px solid var(--line);overflow:hidden}
+.progress>span{display:block;height:100%;width:0;background:var(--accent);transition:width .35s ease}
+.progress.indeterminate>span{width:35%;animation:msbar 1.15s ease-in-out infinite}
+@keyframes msbar{0%{margin-left:-35%}100%{margin-left:100%}}
 .checkin{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}.checkin .main{flex:1;min-width:260px}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:#12251e;border:1px solid #1d5a40;color:var(--ok);font-size:11px}.dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
 .hidden{display:none}.footer-note{margin-top:18px;color:#aab3c5;font-size:11.5px;text-align:center}
@@ -111,12 +115,19 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
           <div class="foot" id="msFoot">计划任务 ModelScope-Daily-Magicube · 登录 + 每天 10:00</div>
         </div>
         <aside class="side">
-          <div class="section-head" style="margin-bottom:0"><div class="section-title">最近日志</div><span class="muted small" id="msLogFile">—</span></div>
-          <pre class="log" id="msLog">暂无日志</pre>
-          <div class="mini"><div class="row between"><span class="label" style="margin:0">运行状态</span><span class="tag" id="msActionTag">—</span></div><div id="msActionText" class="muted small" style="margin-top:4px">—</div></div>
+          <div class="mini">
+            <div class="row between"><span class="label" style="margin:0">运行状态</span><span class="tag" id="msActionTag">—</span></div>
+            <div id="msProgressWrap" class="hidden" style="margin-top:8px">
+              <div class="progress" id="msProgress"><span id="msProgressBar"></span></div>
+              <div class="muted small" id="msProgressText" style="margin-top:5px">—</div>
+            </div>
+            <div id="msActionText" class="muted small" style="margin-top:4px">—</div>
+          </div>
           <div class="mini"><div class="label">运行保障</div><div class="row"><span class="tag info">单实例锁</span><span class="tag info">当天只跑一次</span><span class="tag info">无头 Edge 兜底</span></div></div>
         </aside>
       </div>
+      <div class="section-head" style="margin-top:14px"><div class="section-title">最近日志</div><span class="muted small" id="msLogFile">—</span></div>
+      <pre class="log" id="msLog" style="max-height:340px">暂无日志</pre>
     </section>
 
     <!-- existing check-in -->
@@ -137,12 +148,33 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { token: localStorage.getItem("gw_admin_token") || "", wb: null, ms: null, msPoll: null };
+const state = { token: localStorage.getItem("gw_admin_token") || "", wb: null, ms: null, msPoll: null, msTick: null, msRunning: false, msStartedAt: "", msProgressPrefix: "", msLoading: false };
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtNum(v){return v===null||v===undefined?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:2});}
 function fmtDate(v){if(!v)return"—";const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString();}
-function fmtShortTime(v){if(!v)return"—";const s=String(v);const m=s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);return m?`${m[2]}-${m[3]} ${m[4]}:${m[5]}`:s;}
+function fmtShortTime(v){
+  if(!v)return"—";
+  const s=String(v);
+  if(/T.*Z$/i.test(s)){const d=new Date(s);if(!isNaN(d))return `${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;}
+  const m=s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  return m?`${m[2]}-${m[3]} ${m[4]}:${m[5]}`:s;
+}
+const pad2 = n => String(n).padStart(2,"0");
+function stampLocal(d){d=d||new Date();return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;}
+function fmtLogStamp(iso){const d=new Date(iso);return isNaN(d)?iso:stampLocal(d);}
+function fmtLogText(text){return String(text||"").replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/g,m=>fmtLogStamp(m));}
+function parseStamp(s){if(!s)return null;const t=Date.parse(String(s).replace(" ","T"));return isNaN(t)?null:t;}
+function fmtElapsed(ms){const s=Math.max(0,Math.floor(ms/1000));const m=Math.floor(s/60);return m?`${m} 分 ${s%60} 秒`:`${s} 秒`;}
+function startMSTick(){
+  if(state.msTick) return;
+  state.msTick = setInterval(()=>{
+    if(!state.msRunning) return;
+    const t = parseStamp(state.msStartedAt);
+    if(t) $("msProgressText").textContent = (state.msProgressPrefix||"任务运行中") + ` · 已运行 ${fmtElapsed(Date.now()-t)}`;
+  },1000);
+}
+function stopMSTick(){ if(state.msTick){ clearInterval(state.msTick); state.msTick=null; } }
 function tag(text,cls){return `<span class="tag ${cls||""}">${esc(text)}</span>`;}
 
 async function api(path, opts={}){
@@ -272,12 +304,16 @@ async function openPanel(){
 }
 
 async function loadMS(){
+  if(state.msLoading) return;
+  state.msLoading = true;
   try{
     const d = await api("/admin/api/tools/modelscope/status");
     state.ms = d;
     renderMS(d);
   }catch(e){
     msSetMsg("读取失败：" + e.message, "err");
+  }finally{
+    state.msLoading = false;
   }
 }
 
@@ -307,24 +343,49 @@ function renderMS(d){
   }).join("") || '<tr><td colspan="3" class="muted">暂无账号</td></tr>';
   $("msFoot").textContent = `计划任务 ${d.autoTask && d.autoTask.exists ? "ModelScope-Daily-Magicube" : "未注册"} · 登录 + 每天 10:00 · 当前：${autoState}`;
   $("msLogFile").textContent = d.logFile ? d.logFile.split(/[\\/]/).pop() : "—";
-  $("msLog").textContent = d.logTail || "暂无日志";
+  $("msLog").textContent = fmtLogText(d.logTail || "暂无日志");
   const candidates = [d.run, d.refresh].filter(Boolean);
   const runningAction = candidates.find(a => a.running);
-  const latestAction = candidates.sort((a,b)=>String(b.finishedAt||b.startedAt||"").localeCompare(String(a.finishedAt||a.startedAt||"")))[0];
+  const latestAction = candidates.slice().sort((a,b)=>String(b.finishedAt||b.startedAt||"").localeCompare(String(a.finishedAt||a.startedAt||"")))[0];
   const action = runningAction || latestAction;
-  if (action && action.running) {
+  const running = !!runningAction;
+  state.msRunning = running;
+  $("msRunBtn").disabled = running;
+  $("msRefreshCookieBtn").disabled = running;
+  if (running) {
+    state.msStartedAt = runningAction.startedAt || "";
+    const p = runningAction.progress || null;
+    const total = p && p.total > 0 ? p.total : 0;
+    const done = p ? Math.max(0, p.done || 0) : 0;
+    $("msProgressWrap").classList.remove("hidden");
+    if (total > 0) {
+      const frac = Math.min(1, (done + (p.current && done < total ? 0.5 : 0)) / total);
+      $("msProgress").classList.remove("indeterminate");
+      $("msProgressBar").style.width = (frac * 100).toFixed(1) + "%";
+      state.msProgressPrefix = `已完成 ${done}/${total}` + (p.current ? ` · 当前 ${p.current}` : (p.phase === "done" ? " · 收尾中" : ""));
+    } else {
+      $("msProgress").classList.add("indeterminate");
+      state.msProgressPrefix = "任务运行中（等待进度）";
+    }
+    const t = parseStamp(state.msStartedAt);
+    $("msProgressText").textContent = state.msProgressPrefix + (t ? ` · 已运行 ${fmtElapsed(Date.now()-t)}` : "");
+    startMSTick();
     $("msActionTag").textContent = "运行中"; $("msActionTag").className = "tag info";
-    $("msActionText").textContent = `${action.action === "refresh" ? "刷新 Cookie" : "运行任务"} 开始于 ${action.startedAt || "—"}`;
-  } else if (action && action.finishedAt) {
-    const ok = action.lastExit === 0;
-    $("msActionTag").textContent = ok ? "完成" : "失败"; $("msActionTag").className = "tag " + (ok?"ok":"bad");
-    $("msActionText").textContent = `${action.action === "refresh" ? "刷新 Cookie" : "运行任务"} 结束于 ${action.finishedAt} · 退出码 ${action.lastExit}`;
+    $("msActionText").textContent = `${runningAction.action === "refresh" ? "刷新 Cookie" : "运行任务"} 开始于 ${runningAction.startedAt || "—"}`;
   } else {
-    $("msActionTag").textContent = "空闲"; $("msActionTag").className = "tag";
-    $("msActionText").textContent = "—";
+    stopMSTick();
+    $("msProgressWrap").classList.add("hidden");
+    if (action && action.finishedAt) {
+      const ok = action.lastExit === 0;
+      $("msActionTag").textContent = ok ? "完成" : "失败"; $("msActionTag").className = "tag " + (ok?"ok":"bad");
+      $("msActionText").textContent = `${action.action === "refresh" ? "刷新 Cookie" : "运行任务"} 结束于 ${action.finishedAt} · 退出码 ${action.lastExit}`;
+    } else {
+      $("msActionTag").textContent = "空闲"; $("msActionTag").className = "tag";
+      $("msActionText").textContent = "—";
+    }
   }
   if (d.error) msSetMsg(d.error, "err");
-  if (action && action.running) startMSPoll(); else stopMSPoll();
+  if (running) startMSPoll(); else stopMSPoll();
 }
 
 function stopMSPoll(){ if(state.msPoll){ clearInterval(state.msPoll); state.msPoll=null; } }
@@ -335,9 +396,20 @@ function startMSPoll(){
 }
 
 async function msAction(action){
-  const btn = action === "run" ? $("msRunBtn") : $("msRefreshCookieBtn");
-  btn.disabled = true;
-  msSetMsg((action==="run"?"正在触发运行…":"正在触发刷新 Cookie…"),"muted");
+  const label = action === "run" ? "运行任务" : "刷新 Cookie";
+  $("msRunBtn").disabled = true;
+  $("msRefreshCookieBtn").disabled = true;
+  msSetMsg(`正在触发${label}…`,"muted");
+  $("msActionTag").textContent = "触发中"; $("msActionTag").className = "tag info";
+  $("msActionText").textContent = "等待任务启动…";
+  $("msProgressWrap").classList.remove("hidden");
+  $("msProgress").classList.add("indeterminate");
+  $("msProgressBar").style.width = "35%";
+  state.msRunning = true;
+  state.msStartedAt = stampLocal();
+  state.msProgressPrefix = "已触发，正在启动";
+  $("msProgressText").textContent = state.msProgressPrefix;
+  startMSTick();
   try{
     const r = await api("/admin/api/tools/modelscope/"+(action==="run"?"run":"refresh-cookies"),{method:"POST",body:"{}"});
     msSetMsg(r.message || "已触发","ok");
@@ -345,8 +417,13 @@ async function msAction(action){
     setTimeout(()=>loadMS().catch(()=>{}), 800);
   }catch(e){
     msSetMsg("触发失败：" + e.message,"err");
-  }finally{
-    setTimeout(()=>{btn.disabled=false;}, 1200);
+    state.msRunning = false;
+    stopMSTick();
+    $("msProgressWrap").classList.add("hidden");
+    $("msRunBtn").disabled = false;
+    $("msRefreshCookieBtn").disabled = false;
+    $("msActionTag").textContent = "空闲"; $("msActionTag").className = "tag";
+    $("msActionText").textContent = "—";
   }
 }
 

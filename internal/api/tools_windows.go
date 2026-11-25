@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -63,12 +64,21 @@ type msTask struct {
 	NextRun    string `json:"nextRun,omitempty"`
 }
 
+type msProgress struct {
+	Total     int    `json:"total"`
+	Done      int    `json:"done"`
+	Current   string `json:"current,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
 type msAction struct {
-	Action     string `json:"action"`
-	Running    bool   `json:"running"`
-	LastExit   int    `json:"lastExit"`
-	StartedAt  string `json:"startedAt,omitempty"`
-	FinishedAt string `json:"finishedAt,omitempty"`
+	Action     string      `json:"action"`
+	Running    bool        `json:"running"`
+	LastExit   int         `json:"lastExit"`
+	StartedAt  string      `json:"startedAt,omitempty"`
+	FinishedAt string      `json:"finishedAt,omitempty"`
+	Progress   *msProgress `json:"progress,omitempty"`
 }
 
 type msStatus struct {
@@ -359,25 +369,62 @@ func workBuddyToolPanel() error {
 	return triggerTask(wbPanelTask)
 }
 
-func queryTask(name string) msTask {
+// queryTasks reads several scheduled tasks in one PowerShell call. Calling
+// queryTask per task tripled the status latency (~9s), which made the run
+// progress bar very sluggish.
+func queryTasks(names []string) map[string]msTask {
+	out := make(map[string]msTask, len(names))
+	if len(names) == 0 {
+		return out
+	}
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, fmt.Sprintf("%q", n))
+	}
 	script := fmt.Sprintf(`
-$n = %q
-$t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
-if (-not $t) { '{"exists":false}'; exit 0 }
-$o = [ordered]@{exists=$true;state=[string]$t.State;lastRun="";lastResult=0;nextRun=""}
-try { $i = Get-ScheduledTaskInfo -TaskName $n -ErrorAction Stop; $o.lastRun=[string]$i.LastRunTime; $o.lastResult=$i.LastTaskResult; $o.nextRun=[string]$i.NextRunTime } catch {}
-$o | ConvertTo-Json -Compress
-`, name)
-	out, err := runPowerShell(script)
+$names = @(%s)
+$o = [ordered]@{}
+foreach ($n in $names) {
+  $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+  if (-not $t) { $o[$n] = [ordered]@{exists=$false}; continue }
+  $item = [ordered]@{exists=$true;state=[string]$t.State;lastRun="";lastResult=0;nextRun=""}
+  try { $i = Get-ScheduledTaskInfo -TaskName $n -ErrorAction Stop; $item.lastRun=[string]$i.LastRunTime; $item.lastResult=$i.LastTaskResult; $item.nextRun=[string]$i.NextRunTime } catch {}
+  $o[$n] = $item
+}
+$o | ConvertTo-Json -Compress -Depth 5
+`, strings.Join(quoted, ","))
+	raw, err := runPowerShell(script)
 	if err != nil {
-		return msTask{Exists: false}
+		return out
 	}
-	raw := extractJSONObject(string(out))
-	var t msTask
-	if json.Unmarshal([]byte(raw), &t) != nil {
-		return msTask{Exists: false}
+	var m map[string]msTask
+	if json.Unmarshal([]byte(extractJSONObject(string(raw))), &m) != nil {
+		return out
 	}
-	return t
+	return m
+}
+
+var msTaskCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	data map[string]msTask
+}
+
+// queryTasksCached keeps the admin status endpoint fast while it is polled
+// every few seconds during a run. Scheduled-task state changes slowly; the
+// live run progress comes from the marker/progress files, not this cache.
+func queryTasksCached(names []string) map[string]msTask {
+	msTaskCache.mu.Lock()
+	defer msTaskCache.mu.Unlock()
+	if msTaskCache.data != nil && time.Since(msTaskCache.at) < 20*time.Second {
+		return msTaskCache.data
+	}
+	data := queryTasks(names)
+	if len(data) > 0 {
+		msTaskCache.data = data
+		msTaskCache.at = time.Now()
+	}
+	return data
 }
 
 func readMSAction(action string) msAction {
@@ -394,6 +441,17 @@ func readMSAction(action string) msAction {
 		out.FinishedAt = doneInfo.ModTime().Format("2006-01-02 15:04:05")
 		if b, err := os.ReadFile(done); err == nil {
 			fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &out.LastExit)
+		}
+	}
+	if out.Running && startErr == nil {
+		pf := filepath.Join(msLogs, ".gateway-"+action+".progress.json")
+		if fi, err := os.Stat(pf); err == nil && !fi.ModTime().Before(startInfo.ModTime()) {
+			if b, err := os.ReadFile(pf); err == nil {
+				var p msProgress
+				if json.Unmarshal(b, &p) == nil {
+					out.Progress = &p
+				}
+			}
 		}
 	}
 	return out
@@ -472,9 +530,10 @@ func modelScopeToolStatus() (msStatus, error) {
 		out.Accounts = append(out.Accounts, msAccount{Name: a.Name, MsName: a.MsName, Enabled: enabled, Done: doneSet[a.Name]})
 	}
 	out.LogFile, out.LogTail = latestMSLog()
-	out.AutoTask = queryTask(msAutoTask)
-	out.RunTask = queryTask(msRunTask)
-	out.RefreshTask = queryTask(msRefreshTask)
+	tasks := queryTasksCached([]string{msAutoTask, msRunTask, msRefreshTask})
+	out.AutoTask = tasks[msAutoTask]
+	out.RunTask = tasks[msRunTask]
+	out.RefreshTask = tasks[msRefreshTask]
 	out.Run = readMSAction("run")
 	out.Refresh = readMSAction("refresh")
 	return out, nil
@@ -502,6 +561,7 @@ func modelScopeToolAction(action string) (map[string]any, error) {
 	}
 	_ = os.Remove(filepath.Join(msLogs, ".gateway-"+action+".done"))
 	_ = os.Remove(filepath.Join(msLogs, ".gateway-"+action+".start"))
+	_ = os.Remove(filepath.Join(msLogs, ".gateway-"+action+".progress.json"))
 	if err := triggerTask(task); err != nil {
 		return nil, err
 	}
