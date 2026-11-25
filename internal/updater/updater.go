@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,8 +61,55 @@ func New(cfg *config.Config, version string, log *logx.Logger, apply func(string
 	return &Manager{
 		Home: cfg.Home, Version: version, ManifestURL: cfg.Update.ManifestURL,
 		PublicKey: pub, Log: log, ApplyFunc: apply,
-		Client: &http.Client{Timeout: 5 * time.Minute},
+		Client: &http.Client{Timeout: 5 * time.Minute, Transport: newProxyFallbackTransport()},
 	}
+}
+
+// proxyFallbackTransport prefers the environment proxy but falls back to a
+// direct connection when the proxy itself is unreachable. The Windows service
+// pins HTTPS_PROXY to a local v2rayN/Clash port; if that client is not running,
+// update requests would otherwise fail with "proxyconnect ... connection
+// refused" even when direct GitHub access works.
+type proxyFallbackTransport struct {
+	proxied http.RoundTripper
+	direct  http.RoundTripper
+}
+
+func newProxyFallbackTransport() http.RoundTripper {
+	direct := http.DefaultTransport.(*http.Transport).Clone()
+	direct.Proxy = nil
+	return &proxyFallbackTransport{proxied: http.DefaultTransport, direct: direct}
+}
+
+func (t *proxyFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.proxied.RoundTrip(req)
+	if err == nil || !isProxyDialError(err) {
+		return resp, err
+	}
+	retry := req.Clone(req.Context())
+	if req.Body != nil && req.Body != http.NoBody {
+		if req.GetBody == nil {
+			return nil, err
+		}
+		body, bodyErr := req.GetBody()
+		if bodyErr != nil {
+			return nil, err
+		}
+		retry.Body = body
+	}
+	resp, directErr := t.direct.RoundTrip(retry)
+	if directErr != nil {
+		return nil, fmt.Errorf("proxy unavailable (%v); direct retry failed: %w", err, directErr)
+	}
+	return resp, nil
+}
+
+func isProxyDialError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	return strings.Contains(err.Error(), "proxyconnect")
 }
 
 func (m *Manager) Enabled() bool { return m.ManifestURL != "" }
@@ -182,10 +230,12 @@ func (m *Manager) writeProgressFile(p api.UpdateProgress) {
 
 func (m *Manager) Check(ctx context.Context) (api.UpdateStatus, error) {
 	m.mu.Lock()
-	if !m.cachedAt.IsZero() && time.Since(m.cachedAt) < 10*time.Minute {
-		st, err := m.cached, m.cachedErr
+	// Cache successes for 10 minutes; always retry after a failure so the
+	// admin "检查更新" button works as soon as the proxy/network is restored.
+	if !m.cachedAt.IsZero() && m.cachedErr == nil && time.Since(m.cachedAt) < 10*time.Minute {
+		st := m.cached
 		m.mu.Unlock()
-		return st, err
+		return st, nil
 	}
 	m.mu.Unlock()
 	st, err := m.check(ctx)

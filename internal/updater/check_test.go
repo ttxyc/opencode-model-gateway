@@ -165,3 +165,28 @@ func TestCheckRejectsUnsigned(t *testing.T) {
 }
 
 var _ = io.EOF
+
+func TestCheckRetriesAfterFailure(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Manifest{Version: "1.1.0", Asset: "https://example/gateway.exe"})
+	}))
+	defer srv.Close()
+
+	m := &Manager{Home: t.TempDir(), Version: "1.0.0", ManifestURL: srv.URL + "/latest.json", Client: srv.Client()}
+	if _, err := m.Check(context.Background()); err == nil {
+		t.Fatal("expected first check to fail")
+	}
+	st, err := m.Check(context.Background())
+	if err != nil {
+		t.Fatalf("failure must not be cached: %v", err)
+	}
+	if st.Latest != "1.1.0" || !st.Available {
+		t.Fatalf("status = %+v", st)
+	}
+}
