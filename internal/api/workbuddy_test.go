@@ -222,6 +222,38 @@ func TestWorkBuddyRefreshesExpiredToken(t *testing.T) {
 	}
 }
 
+func TestWorkBuddyAdminRefresh(t *testing.T) {
+	ts, cfg, s, _, _, refreshes := newWorkBuddyHarness(t, false)
+	status, out, _ := do(t, "POST", ts.URL+"/admin/api/workbuddy/refresh", cfg.AdminToken, `{"id":"user:u1"}`)
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, out)
+	}
+	if got := atomic.LoadInt32(refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d", got)
+	}
+	updated, _ := s.wb.Find("user:u1")
+	if updated.AccessToken != "wb-access-2" || updated.RefreshToken != "wb-refresh-2" {
+		t.Fatalf("token not updated: %+v", updated)
+	}
+	if strings.Contains(out, "wb-access") || strings.Contains(out, "wb-refresh") {
+		t.Fatalf("admin refresh leaked tokens: %s", out)
+	}
+	if !strings.Contains(out, "user:u1") || !strings.Contains(out, "expiresAt") {
+		t.Fatalf("response missing account view: %s", out)
+	}
+}
+
+func TestWorkBuddyAdminRefreshUnknownAccount(t *testing.T) {
+	ts, cfg, _, _, _, refreshes := newWorkBuddyHarness(t, false)
+	status, out, _ := do(t, "POST", ts.URL+"/admin/api/workbuddy/refresh", cfg.AdminToken, `{"id":"user:nope"}`)
+	if status != 400 {
+		t.Fatalf("status=%d body=%s", status, out)
+	}
+	if got := atomic.LoadInt32(refreshes); got != 0 {
+		t.Fatalf("refresh calls = %d", got)
+	}
+}
+
 func TestWorkBuddyCreditsEndpoint(t *testing.T) {
 	ts, cfg, s, _, _, _ := newWorkBuddyHarness(t, false)
 	acc, ok := s.wb.Find("user:u1")

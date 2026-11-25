@@ -238,6 +238,7 @@ function renderWB(){
           <td>${wbTag(a)} ${a.lastError?`<span class="muted small">${esc(a.lastError)}</span>`:""}</td>
           <td style="text-align:right;white-space:nowrap">
             <button class="small" data-wb-models="${esc(a.id)}">目录</button>
+            <button class="small" data-wb-refresh="${esc(a.id)}">刷新令牌</button>
             <button class="small" data-wb-reset="${esc(a.id)}">重置</button>
             <button class="danger small" data-wb-del="${esc(a.id)}">删除</button>
           </td>
@@ -246,6 +247,7 @@ function renderWB(){
       </table>
     </div>`).join("");
   document.querySelectorAll("[data-wb-models]").forEach(b=>b.onclick=()=>wbModels(b.dataset.wbModels));
+  document.querySelectorAll("[data-wb-refresh]").forEach(b=>b.onclick=()=>wbRefresh(b.dataset.wbRefresh));
   document.querySelectorAll("[data-wb-reset]").forEach(b=>b.onclick=()=>wbReset(b.dataset.wbReset));
   document.querySelectorAll("[data-wb-del]").forEach(b=>b.onclick=()=>wbRemove(b.dataset.wbDel));
 }
@@ -293,6 +295,15 @@ async function wbRemove(id){
 async function wbReset(id){
   try{ const r=await api("/admin/api/workbuddy/reset",{method:"POST",body:JSON.stringify({id})}); state.wb={...(state.wb||{}),accounts:r.accounts}; renderWB(); wbSay("ok","账号状态已重置"); }
   catch(e){ wbSay("err",e.message); }
+}
+async function wbRefresh(id){
+  wbSay("muted","正在刷新令牌…");
+  try{
+    const r=await api("/admin/api/workbuddy/refresh",{method:"POST",body:JSON.stringify({id})});
+    state.wb={...(state.wb||{}),accounts:r.accounts}; renderWB();
+    const exp=r.account&&r.account.expiresAt?fmtTime(r.account.expiresAt):"—";
+    wbSay("ok","令牌已刷新，新到期时间 "+exp);
+  }catch(e){ wbSay("err",e.message); }
 }
 async function wbModels(id){
   wbSay("muted","读取模型目录中…");

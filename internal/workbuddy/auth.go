@@ -474,20 +474,22 @@ func (m *Manager) refreshAccount(ctx context.Context, acc Account) (Account, err
 	return acc, nil
 }
 
-// RefreshNow forces a refresh for the admin "测试/刷新" action.
+// RefreshNow forces a token refresh for the admin "刷新令牌" action. It goes
+// through EnsureAccess so it shares the single-flight guard with live traffic
+// (refresh tokens rotate, concurrent refreshes would invalidate each other).
 func (m *Manager) RefreshNow(ctx context.Context, id string) (AccountView, error) {
 	acc, ok := m.Find(id)
 	if !ok {
 		return AccountView{}, errors.New("账号不存在")
 	}
 	if acc.RefreshToken == "" {
-		return AccountView{}, errors.New("账号缺少 refreshToken")
+		return AccountView{}, errors.New("账号缺少 refreshToken，请重新登录")
 	}
-	updated, err := m.refreshAccount(ctx, acc)
-	if err != nil {
+	acc.ExpiresAt = 1 // force the refresh branch; 0 means "never expires"
+	if _, err := m.EnsureAccess(ctx, &acc); err != nil {
 		return AccountView{}, err
 	}
-	return viewOf(updated), nil
+	return viewOf(acc), nil
 }
 
 // FetchModels reads /v3/config for one account. It is display-only: the

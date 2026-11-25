@@ -377,6 +377,31 @@ func (s *Server) handleAdminWorkBuddy(w http.ResponseWriter, r *http.Request, re
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accounts": s.wb.Snapshot()})
 		return http.StatusOK
 
+	case "/admin/api/workbuddy/refresh":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "只支持 POST", "invalid_request_error", "method_not_allowed", requestID)
+			return http.StatusMethodNotAllowed
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+			writeError(w, http.StatusBadRequest, "缺少 id", "invalid_request_error", "invalid_input", requestID)
+			return http.StatusBadRequest
+		}
+		id := strings.TrimSpace(body.ID)
+		if _, ok := s.wb.Find(id); !ok {
+			writeError(w, http.StatusBadRequest, "账号不存在", "invalid_request_error", "invalid_input", requestID)
+			return http.StatusBadRequest
+		}
+		acc, err := s.wb.RefreshNow(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error(), "upstream_error", "workbuddy_refresh_failed", requestID)
+			return http.StatusBadGateway
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": acc, "accounts": s.wb.Snapshot()})
+		return http.StatusOK
+
 	case "/admin/api/workbuddy/models":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "只支持 GET", "invalid_request_error", "method_not_allowed", requestID)
