@@ -28,7 +28,7 @@ import (
 	"github.com/ttxyc/opencode-model-gateway/internal/workbuddy"
 )
 
-//go:embed web/admin.html
+//go:embed web/admin.html web/tools.html
 var webFS embed.FS
 
 type UpdateStatus struct {
@@ -183,6 +183,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 		b, _ := webFS.ReadFile("web/admin.html")
+		_, _ = w.Write(b)
+		return
+	}
+	if path == "/admin/tools" || path == "/admin/tools/" {
+		status = http.StatusOK
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		b, _ := webFS.ReadFile("web/tools.html")
 		_, _ = w.Write(b)
 		return
 	}
@@ -688,6 +695,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 	if !s.adminAuthorized(r) {
 		writeError(w, http.StatusUnauthorized, "管理员令牌无效或非本机访问", "invalid_request_error", "invalid_admin_token", requestID)
 		return http.StatusUnauthorized
+	}
+	if strings.HasPrefix(path, "/admin/api/tools/") {
+		return s.handleTools(w, r, requestID, path)
 	}
 	if strings.HasPrefix(path, "/admin/api/workbuddy/") {
 		return s.handleAdminWorkBuddy(w, r, requestID, path)

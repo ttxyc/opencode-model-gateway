@@ -21,7 +21,7 @@ Go 单文件实现的 OpenAI 兼容本地网关，Windows 10/11 x64，作为真�
 ```bash
 go test ./...
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=1.2.10" \
+  -ldflags "-s -w -X main.version=1.2.11" \
   -o dist/gateway.exe ./cmd/gateway
 ```
 

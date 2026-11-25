@@ -55,6 +55,16 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div>
+          <div style="font-weight:600">工具中心</div>
+          <div class="muted small">WorkBuddy 积分助手 / 魔粒自动获取 / 每日签到</div>
+        </div>
+        <button class="primary" id="toolsBtn">进入工具中心</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
           <div style="font-weight:600">添加 key</div>
           <div class="muted small">选择已有服务商，粘贴 key；会先调用平台余额/模型接口校验</div>
         </div>
@@ -504,6 +514,7 @@ $("exportBtn").onclick=async()=>{
   }catch(e){ alert(e.message); }
 };
 $("addBtn").onclick=addKey;
+$("toolsBtn").onclick=()=>{ location.href="/admin/tools"; };
 $("checkUpdateBtn").onclick=checkUpdate;
 $("applyUpdateBtn").onclick=applyUpdate;
 $("wbImportBtn").onclick=wbImport;

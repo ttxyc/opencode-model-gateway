@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opencode Model Gateway · 工具中心</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--card2:#13161d;--fg:#e7eaf0;--muted:#8b93a7;--line:#2a2f3a;--ok:#35c28a;--warn:#e0a33a;--bad:#e05c5c;--accent:#5b9dff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+a{color:var(--accent);text-decoration:none}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 24px 48px}
+.topline{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:14px}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.between{justify-content:space-between}
+.title{font-weight:650;font-size:15px}.muted{color:var(--muted)}.small{font-size:12px}.err{color:var(--bad)}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:#aab3c5;white-space:nowrap}
+.tag.ok{color:var(--ok);border-color:#1d5a40}.tag.warn{color:var(--warn);border-color:#5a4720}.tag.bad{color:var(--bad);border-color:#5a2a2e}.tag.info{color:var(--accent);border-color:#2b3a56}.tag.locked{color:#e0e5ef;border-color:#4a5568;background:#252b36}
+button{font:inherit;border-radius:7px;border:1px solid var(--line);background:#1d2430;color:var(--fg);padding:7px 11px;cursor:pointer}
+button:hover{filter:brightness(1.08)}button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}button:disabled{opacity:.5;cursor:not-allowed}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:14px}
+@media(max-width:760px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.stat{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:11px 12px}
+.stat .label{font-size:11px;color:var(--muted);margin-bottom:4px}.stat .value{font-size:20px;font-weight:650;line-height:1.15;white-space:nowrap}.stat .value small{font-size:12px;font-weight:400;color:var(--muted)}.stat .hint{font-size:11px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.actions{margin-top:14px}.card-split{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,0.85fr);gap:16px;align-items:start;border-top:1px solid var(--line);margin-top:14px;padding-top:13px}
+@media(max-width:900px){.card-split{grid-template-columns:1fr}}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.section-title{font-weight:600;font-size:13px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);font-size:12.5px;vertical-align:middle}th{color:var(--muted);font-weight:500}tr:last-child td{border-bottom:0}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.reward{color:var(--accent);font-weight:600;white-space:nowrap}
+.foot{margin-top:10px;font-size:11.5px;color:#aab3c5}.side{display:flex;flex-direction:column;gap:9px}
+.mini{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px}.mini .label{font-size:11px;color:var(--muted);margin-bottom:4px}.mini .row{margin-top:6px}
+.log{background:#10141c;border:1px solid #2f3a4c;border-radius:8px;padding:9px 10px;max-height:160px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;color:#d8e0ee;line-height:1.55;white-space:pre-wrap}
+.checkin{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}.checkin .main{flex:1;min-width:260px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:#12251e;border:1px solid #1d5a40;color:var(--ok);font-size:11px}.dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+.hidden{display:none}.footer-note{margin-top:18px;color:#aab3c5;font-size:11.5px;text-align:center}
+.token-box{max-width:640px;margin:60px auto}.token-box input{min-width:300px;padding:8px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg)}
+.loading{opacity:.65}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="tokenBox" class="card token-box hidden">
+    <div class="title">进入工具中心</div>
+    <div class="muted small" style="margin:4px 0 10px">输入管理员令牌（与网关管理页相同，存在当前浏览器 localStorage）</div>
+    <div class="row"><input id="token" type="password" placeholder="admin token"><button class="primary" id="loginBtn">进入</button></div>
+    <div id="loginErr" class="err small" style="margin-top:8px"></div>
+  </div>
+
+  <div id="main" class="hidden">
+    <div class="topline">
+      <div><h1>opencode Model Gateway · 工具中心</h1><div class="sub" id="sub">加载中…</div></div>
+      <div class="row"><a href="/admin">返回网关管理</a><button id="refreshBtn">全部刷新</button></div>
+    </div>
+
+    <!-- WorkBuddy -->
+    <section class="card" id="wbCard">
+      <div class="row between">
+        <div><div class="title">WorkBuddy 积分助手</div><div class="muted small" id="wbAccount">读取账号与积分中…</div></div>
+        <span class="tag" id="wbClaimableTag">—</span>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">剩余积分</div><div class="value" id="wbCredits">—</div><div class="hint" id="wbCreditsHint">—</div></div>
+        <div class="stat"><div class="label">成长连登</div><div class="value" id="wbStreak">—</div><div class="hint" id="wbStreakHint">—</div></div>
+        <div class="stat"><div class="label">首月权益</div><div class="value" id="wbGift" style="font-size:16px">—</div><div class="hint" id="wbGiftHint">—</div></div>
+        <div class="stat"><div class="label">成长任务</div><div class="value" id="wbTasks">—</div><div class="hint" id="wbTasksHint">—</div></div>
+      </div>
+      <div class="row actions">
+        <button class="primary" id="wbClaimBtn" disabled>领取可领</button>
+        <button id="wbRefreshBtn">巡检一次</button>
+        <button id="wbPanelBtn">打开完整面板</button>
+      </div>
+      <div id="wbMsg" class="small" style="margin-top:8px"></div>
+      <div class="card-split">
+        <div>
+          <div class="section-head"><div class="section-title">任务预览</div><span class="muted small" id="wbTaskHint">—</span></div>
+          <table><thead><tr><th>任务</th><th>奖励</th><th>状态</th></tr></thead><tbody id="wbTaskList"><tr><td colspan="3" class="muted">巡检中…</td></tr></tbody></table>
+          <div class="foot">数据来自 WorkBuddy 成长任务接口；领取会先读状态，已领不会重复提交。</div>
+        </div>
+        <aside class="side">
+          <div class="mini"><div class="label">连登档位</div><div id="wbTiers">—</div></div>
+          <div class="mini"><div class="label">账号等级</div><div id="wbLevel">—</div></div>
+          <div class="mini"><div class="label">每日活跃</div><div>需客户端对话 <span class="tag warn">网页不算</span></div></div>
+          <div class="mini"><div class="label">数据来源</div><div>网关积分接口 + 成长任务接口 <span class="tag info">实时</span></div></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ModelScope -->
+    <section class="card" id="msCard">
+      <div class="row between">
+        <div><div class="title">魔粒自动获取 · ModelScope</div><div class="muted small" id="msSub">读取账号与运行状态中…</div></div>
+        <span class="tag" id="msTodayTag">—</span>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">启用账号</div><div class="value" id="msAccounts">—</div><div class="hint" id="msAccountsHint">—</div></div>
+        <div class="stat"><div class="label">今日完成</div><div class="value" id="msDone">—</div><div class="hint" id="msDoneHint">—</div></div>
+        <div class="stat"><div class="label">上次运行</div><div class="value" id="msLast" style="font-size:16px">—</div><div class="hint" id="msLastHint">—</div></div>
+        <div class="stat"><div class="label">自动任务</div><div class="value" id="msAuto" style="font-size:15px">—</div><div class="hint" id="msAutoHint">—</div></div>
+      </div>
+      <div class="row actions">
+        <button class="primary" id="msRunBtn">立即运行</button>
+        <button id="msLogBtn">查看日志</button>
+        <button id="msRefreshCookieBtn">刷新 Cookie</button>
+      </div>
+      <div id="msMsg" class="small" style="margin-top:8px"></div>
+      <div class="card-split">
+        <div>
+          <div class="section-head"><div class="section-title">账号状态</div><span class="muted small" id="msStateHint">—</span></div>
+          <table><thead><tr><th>账号</th><th>启用</th><th style="text-align:right">今日</th></tr></thead><tbody id="msAccountList"><tr><td colspan="3" class="muted">读取中…</td></tr></tbody></table>
+          <div class="foot" id="msFoot">计划任务 ModelScope-Daily-Magicube · 登录 + 每天 10:00</div>
+        </div>
+        <aside class="side">
+          <div class="section-head" style="margin-bottom:0"><div class="section-title">最近日志</div><span class="muted small" id="msLogFile">—</span></div>
+          <pre class="log" id="msLog">暂无日志</pre>
+          <div class="mini"><div class="row between"><span class="label" style="margin:0">运行状态</span><span class="tag" id="msActionTag">—</span></div><div id="msActionText" class="muted small" style="margin-top:4px">—</div></div>
+          <div class="mini"><div class="label">运行保障</div><div class="row"><span class="tag info">单实例锁</span><span class="tag info">当天只跑一次</span><span class="tag info">无头 Edge 兜底</span></div></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- existing check-in -->
+    <section class="card">
+      <div class="checkin">
+        <div class="main">
+          <div class="row"><div class="title">WorkBuddy 每日签到</div><span class="pill"><span class="dot"></span>已整合</span></div>
+          <div class="muted small" style="margin-top:4px">SYSTEM 任务开机 + 每天 10:00 自动代签；网关启动时自动确保任务存在。</div>
+        </div>
+        <div class="muted small" id="checkinSummary">读取中…</div>
+        <div class="row"><button id="checkinStatusBtn">查看状态</button><button class="primary" id="checkinRunBtn">立即签到</button></div>
+      </div>
+      <div id="checkinMsg" class="small" style="margin-top:8px"></div>
+    </section>
+
+    <div class="footer-note">工具中心 · 数据来自本机项目；WorkBuddy 面板以独立窗口打开；ModelScope 任务在用户会话中执行</div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { token: localStorage.getItem("gw_admin_token") || "", wb: null, ms: null, msPoll: null };
+
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function fmtNum(v){return v===null||v===undefined?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:2});}
+function fmtDate(v){if(!v)return"—";const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString();}
+function fmtShortTime(v){if(!v)return"—";const s=String(v);const m=s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);return m?`${m[2]}-${m[3]} ${m[4]}:${m[5]}`:s;}
+function tag(text,cls){return `<span class="tag ${cls||""}">${esc(text)}</span>`;}
+
+async function api(path, opts={}){
+  const r = await fetch(path,{...opts,headers:{"X-Admin-Token":state.token,"Content-Type":"application/json",...(opts.headers||{})}});
+  let body = null; try{ body = await r.json(); }catch(_){}
+  if(!r.ok){
+    const msg = (body && body.error && body.error.message) || ("HTTP "+r.status);
+    if(r.status===401){ localStorage.removeItem("gw_admin_token"); state.token=""; showToken(); }
+    throw new Error(msg);
+  }
+  return body;
+}
+
+function showToken(){ $("main").classList.add("hidden"); $("tokenBox").classList.remove("hidden"); }
+function showMain(){ $("tokenBox").classList.add("hidden"); $("main").classList.remove("hidden"); }
+
+async function loadAll(){
+  $("sub").textContent = "加载中…";
+  await Promise.allSettled([loadWB(), loadMS(), loadCheckin()]);
+  $("sub").textContent = "工具中心 · 数据来自本机项目";
+}
+
+function wbSetMsg(text, cls){ $("wbMsg").className = (cls||"muted")+" small"; $("wbMsg").textContent = text; }
+function msSetMsg(text, cls){ $("msMsg").className = (cls||"muted")+" small"; $("msMsg").textContent = text; }
+
+async function loadWB(){
+  $("wbCard").classList.add("loading");
+  wbSetMsg("巡检中…（首次会启动用户会话任务，约 5–15 秒）","muted");
+  try{
+    const d = await api("/admin/api/tools/workbuddy/status");
+    state.wb = d;
+    renderWB(d);
+    wbSetMsg("巡检完成：" + fmtDate(d && d.session ? d.session.expiresAt : "") + " token 到期", "ok");
+  }catch(e){
+    wbSetMsg("巡检失败：" + e.message, "err");
+    $("wbClaimableTag").textContent = "—";
+    $("wbClaimableTag").className = "tag bad";
+  }finally{
+    $("wbCard").classList.remove("loading");
+  }
+}
+
+function renderWB(d){
+  const data = (d && d.data) || {};
+  const session = d && d.session || {};
+  const gw = data.gateway && data.gateway.ok ? data.gateway.data : null;
+  const gwAcc = gw && Array.isArray(gw.accounts) ? gw.accounts[0] : null;
+  const credits = gwAcc ? (gwAcc.credits !== undefined ? gwAcc.credits : gw.total) : (data.billing && data.billing.total);
+  const segments = (gwAcc && gwAcc.segments) || (data.billing && data.billing.segments) || [];
+  $("wbAccount").textContent = (session.displayName ? `账号：${session.displayName} · ` : "") + (segments.length ? `${segments.length} 个积分包` : "WorkBuddy");
+  $("wbCredits").textContent = fmtNum(credits);
+  $("wbCreditsHint").textContent = segments.length ? `${segments.length} 个包 · ${segments[0] && segments[0].expiresAt ? fmtShortTime(segments[0].expiresAt) : ""} 到期` : "—";
+  const streak = (data.streak && data.streak.streak) || {};
+  const red = (data.streak && data.streak.redemption_status) || {};
+  const cards = (data.streak && data.streak.makeup_cards) || {};
+  $("wbStreak").innerHTML = `${streak.days||0} <small>天</small>`;
+  $("wbStreakHint").textContent = `补登卡 ${cards.balance||0}/${cards.max||4} · 下档 ${streak.next_tier||"—"}`;
+  const gift = data.gift || {};
+  $("wbGift").textContent = gift.claimed ? "已领取" : (gift.active ? "未领取" : "—");
+  $("wbGiftHint").textContent = gift.claimed ? (gift.claimed_at||"") : (gift.active ? "可领取" : "无活动");
+  const tasks = data.tasks || [];
+  const done = t => t.accept_status === "completed" || (t.accept_status === "accepted" && t.progress && t.progress.target>0 && t.progress.current>=t.progress.target);
+  const claimableTasks = tasks.filter(t => t.accept_status !== "claimed" && done(t));
+  let claimCount = claimableTasks.length;
+  if (red.tier_7d_status && red.tier_7d_status !== "locked" && !red.tier_7d_count) claimCount++;
+  if (red.tier_14d_status && red.tier_14d_status !== "locked" && !red.tier_14d_count) claimCount++;
+  if (red.tier_28d_status && red.tier_28d_status !== "locked" && !red.tier_28d_count) claimCount++;
+  if ((data.lottery && data.lottery.chances) > 0) claimCount++;
+  if ((data.energy && data.energy.balance) >= 10) claimCount++;
+  if (data.travel && ["arrived","returned"].includes(data.travel.state)) claimCount++;
+  $("wbClaimableTag").textContent = claimCount ? `可领 ${claimCount}` : "暂无可领";
+  $("wbClaimableTag").className = claimCount ? "tag ok" : "tag";
+  $("wbClaimBtn").disabled = !claimCount;
+  $("wbClaimBtn").textContent = claimCount ? `领取可领（${claimCount}）` : "领取可领";
+  $("wbTasks").innerHTML = `${tasks.length} <small>个</small>`;
+  const claimed = tasks.filter(t=>t.accept_status==="claimed").length;
+  $("wbTasksHint").textContent = `可领 ${claimableTasks.length} · 已领 ${claimed}`;
+  $("wbTaskHint").textContent = `共 ${tasks.length} 个 · 可领 ${claimableTasks.length}`;
+  $("wbTaskList").innerHTML = tasks.slice(0,8).map(t=>{
+    const isDone = done(t);
+    const st = t.accept_status;
+    let label = "未开始", cls = "locked";
+    if (st === "claimed") { label="已领"; cls=""; }
+    else if (st === "completed" || isDone) { label="可领"; cls="ok"; }
+    else if (st === "accepted") { label="进行中"; cls="info"; }
+    return `<tr><td><span class="mono">${esc(t.task_code||"")}</span><div class="muted small">${esc(t.title||"")}</div></td><td class="reward">+${fmtNum(t.reward_credit||0)}</td><td>${tag(label,cls)}</td></tr>`;
+  }).join("") || '<tr><td colspan="3" class="muted">暂无任务</td></tr>';
+  const tierNames = ["7d","14d","28d"];
+  $("wbTiers").innerHTML = tierNames.map(t=>{
+    const status = red["tier_"+t+"_status"] || "locked";
+    const count = red["tier_"+t+"_count"] || 0;
+    if (count) return `${t} ${tag("已兑换","ok")}`;
+    if (status === "locked") return `${t} ${tag("未解锁","locked")}`;
+    return `${t} ${tag("可兑换","ok")}`;
+  }).join("<br>");
+  const profile = data.profile || {};
+  $("wbLevel").textContent = profile.level_name ? `${profile.level_name}（Lv.${profile.level}，完成 ${profile.completed||0}/${profile.total||0}）` : "—";
+  if (data.errors && data.errors.length) wbSetMsg("部分数据获取失败：" + data.errors.join("；"), "err");
+}
+
+async function claimWB(){
+  $("wbClaimBtn").disabled = true;
+  wbSetMsg("领取中…","muted");
+  try{
+    const r = await api("/admin/api/tools/workbuddy/claim",{method:"POST",body:"{}"});
+    const results = r.results || [];
+    const failed = results.filter(x=>!x.ok);
+    wbSetMsg(`领取完成：成功 ${r.success||0}，失败 ${r.failed||0}` + (failed.length ? "；" + failed.map(x=>x.label).join("、") : ""), failed.length?"err":"ok");
+    setTimeout(loadWB, 800);
+  }catch(e){
+    wbSetMsg("领取失败：" + e.message, "err");
+    $("wbClaimBtn").disabled = false;
+  }
+}
+
+async function openPanel(){
+  $("wbPanelBtn").disabled = true;
+  wbSetMsg("正在打开独立面板…","muted");
+  try{
+    const r = await api("/admin/api/tools/workbuddy/panel",{method:"POST",body:"{}"});
+    wbSetMsg(r.message || "已打开独立窗口","ok");
+  }catch(e){
+    wbSetMsg("打开面板失败：" + e.message,"err");
+  }finally{
+    $("wbPanelBtn").disabled = false;
+  }
+}
+
+async function loadMS(){
+  try{
+    const d = await api("/admin/api/tools/modelscope/status");
+    state.ms = d;
+    renderMS(d);
+  }catch(e){
+    msSetMsg("读取失败：" + e.message, "err");
+  }
+}
+
+function renderMS(d){
+  const accounts = d.accounts || [];
+  const enabled = accounts.filter(a=>a.enabled);
+  $("msAccounts").innerHTML = `${d.enabledCount||0} <small>个</small>`;
+  $("msAccountsHint").textContent = `共 ${accounts.length} 个账号`;
+  const doneCount = accounts.filter(a=>a.enabled && a.done).length;
+  $("msDone").textContent = d.doneToday ? `${doneCount}/${d.enabledCount||0}` : "0/" + (d.enabledCount||0);
+  $("msDoneHint").textContent = d.doneToday ? "今日已完成" : "今日未运行";
+  $("msTodayTag").textContent = d.doneToday ? "今日已完成" : "今日未运行";
+  $("msTodayTag").className = "tag " + (d.doneToday ? "ok" : "warn");
+  const last = d.doneAt || (d.run && d.run.finishedAt) || (d.refresh && d.refresh.finishedAt);
+  $("msLast").textContent = last ? fmtShortTime(last) : "—";
+  $("msLastHint").textContent = d.doneAt ? "状态文件" : "最近动作";
+  const auto = d.autoTask || {};
+  const autoState = auto.exists ? (auto.state || "未知") : "未安装";
+  $("msAuto").textContent = autoState === "Disabled" ? "已禁用" : autoState;
+  $("msAutoHint").textContent = auto.exists ? "登录 + 每天 10:00" : "未注册";
+  $("msAuto").style.color = autoState === "Disabled" ? "var(--warn)" : "";
+  $("msSub").textContent = `账号 ${accounts.length} 个 · 自动任务 ${autoState === "Disabled" ? "已禁用（手动运行可用）" : autoState}`;
+  $("msStateHint").textContent = d.doneToday ? `完成于 ${fmtShortTime(d.doneAt)}` : "今日尚未完成";
+  $("msAccountList").innerHTML = accounts.map(a=>{
+    const doneTag = !a.enabled ? tag("已停用","") : (d.doneToday && a.done ? tag("完成","ok") : tag("待运行","warn"));
+    return `<tr><td class="mono">${esc(a.name)}</td><td>${a.enabled?tag("启用","ok"):tag("停用","")}</td><td style="text-align:right">${doneTag}</td></tr>`;
+  }).join("") || '<tr><td colspan="3" class="muted">暂无账号</td></tr>';
+  $("msFoot").textContent = `计划任务 ${d.autoTask && d.autoTask.exists ? "ModelScope-Daily-Magicube" : "未注册"} · 登录 + 每天 10:00 · 当前：${autoState}`;
+  $("msLogFile").textContent = d.logFile ? d.logFile.split(/[\\/]/).pop() : "—";
+  $("msLog").textContent = d.logTail || "暂无日志";
+  const candidates = [d.run, d.refresh].filter(Boolean);
+  const runningAction = candidates.find(a => a.running);
+  const latestAction = candidates.sort((a,b)=>String(b.finishedAt||b.startedAt||"").localeCompare(String(a.finishedAt||a.startedAt||"")))[0];
+  const action = runningAction || latestAction;
+  if (action && action.running) {
+    $("msActionTag").textContent = "运行中"; $("msActionTag").className = "tag info";
+    $("msActionText").textContent = `${action.action === "refresh" ? "刷新 Cookie" : "运行任务"} 开始于 ${action.startedAt || "—"}`;
+  } else if (action && action.finishedAt) {
+    const ok = action.lastExit === 0;
+    $("msActionTag").textContent = ok ? "完成" : "失败"; $("msActionTag").className = "tag " + (ok?"ok":"bad");
+    $("msActionText").textContent = `${action.action === "refresh" ? "刷新 Cookie" : "运行任务"} 结束于 ${action.finishedAt} · 退出码 ${action.lastExit}`;
+  } else {
+    $("msActionTag").textContent = "空闲"; $("msActionTag").className = "tag";
+    $("msActionText").textContent = "—";
+  }
+  if (d.error) msSetMsg(d.error, "err");
+  if (action && action.running) startMSPoll(); else stopMSPoll();
+}
+
+function stopMSPoll(){ if(state.msPoll){ clearInterval(state.msPoll); state.msPoll=null; } }
+function startMSPoll(){
+  if(state.msPoll) return;
+  state.msPoll = setInterval(()=>loadMS().catch(()=>{}), 2500);
+  setTimeout(()=>stopMSPoll(), 15*60*1000);
+}
+
+async function msAction(action){
+  const btn = action === "run" ? $("msRunBtn") : $("msRefreshCookieBtn");
+  btn.disabled = true;
+  msSetMsg((action==="run"?"正在触发运行…":"正在触发刷新 Cookie…"),"muted");
+  try{
+    const r = await api("/admin/api/tools/modelscope/"+(action==="run"?"run":"refresh-cookies"),{method:"POST",body:"{}"});
+    msSetMsg(r.message || "已触发","ok");
+    startMSPoll();
+    setTimeout(()=>loadMS().catch(()=>{}), 800);
+  }catch(e){
+    msSetMsg("触发失败：" + e.message,"err");
+  }finally{
+    setTimeout(()=>{btn.disabled=false;}, 1200);
+  }
+}
+
+async function loadCheckin(dryRun=true){
+  try{
+    const r = await api("/admin/api/workbuddy/checkin",{method:"POST",body:JSON.stringify({region:"all",dryRun})});
+    const res = r.result || {};
+    const items = res.results || [];
+    const cn = items.find(x=>x.region==="cn");
+    const global = items.find(x=>x.region==="global");
+    const parts = [];
+    if(cn) parts.push(`CN ${cn.label||""} · ${cn.state||""} · 连登 ${cn.streakDays||0} 天`);
+    if(global) parts.push(`国际区 ${global.state||""}${global.active===false?"（无活动）":""}`);
+    $("checkinSummary").textContent = parts.join(" · ") || "—";
+    $("checkinMsg").className = res.failed>0 ? "err small" : "muted small";
+    $("checkinMsg").textContent = `success=${res.success||0} already=${res.already||0} eligible=${res.eligible||0} skipped=${res.skipped||0} failed=${res.failed||0}`;
+  }catch(e){
+    $("checkinMsg").className = "err small";
+    $("checkinMsg").textContent = "签到查询失败：" + e.message;
+  }
+}
+
+async function checkinRun(){
+  $("checkinRunBtn").disabled = true;
+  await loadCheckin(false);
+  $("checkinRunBtn").disabled = false;
+}
+
+$("loginBtn").onclick = async ()=>{
+  state.token = $("token").value.trim();
+  localStorage.setItem("gw_admin_token", state.token);
+  $("loginErr").textContent = "";
+  try{ showMain(); await loadAll(); }
+  catch(e){ $("loginErr").textContent = e.message; }
+};
+$("token").addEventListener("keydown",e=>{ if(e.key==="Enter") $("loginBtn").click(); });
+$("refreshBtn").onclick = ()=>loadAll();
+$("wbRefreshBtn").onclick = ()=>loadWB();
+$("wbClaimBtn").onclick = ()=>claimWB();
+$("wbPanelBtn").onclick = ()=>openPanel();
+$("msRunBtn").onclick = ()=>msAction("run");
+$("msRefreshCookieBtn").onclick = ()=>msAction("refresh");
+$("msLogBtn").onclick = async ()=>{ await loadMS(); $("msLog").scrollIntoView({behavior:"smooth",block:"center"}); };
+$("checkinStatusBtn").onclick = ()=>loadCheckin(true);
+$("checkinRunBtn").onclick = ()=>checkinRun();
+
+(async function start(){
+  if(!state.token){ showToken(); return; }
+  showMain();
+  await loadAll();
+})();
+</script>
+</body>
+</html>
