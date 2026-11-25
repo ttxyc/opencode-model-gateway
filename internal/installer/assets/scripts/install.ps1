@@ -34,6 +34,10 @@ $principal = New-Object Security.Principal.WindowsPrincipal($id)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail "Run install.ps1 as Administrator (one time only)." }
 if (-not [Environment]::Is64BitOperatingSystem) { Fail "Only x64 Windows is supported." }
 
+$svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\opencode-model-gateway"
+$oldEnv = @()
+try { $oldEnv = @((Get-ItemProperty -Path $svcKey -Name Environment -ErrorAction Stop).Environment | Where-Object { $_ }) } catch {}
+
 Write-Host "Installing to $DataHome"
 if (Get-Service -Name "opencode-model-gateway" -ErrorAction SilentlyContinue) {
   Write-Host "Stopping existing service..."
@@ -132,15 +136,20 @@ try {
 } catch { Fail "health check failed: $($_.Exception.Message)" }
 
 if ($UpdateProxy) {
-  $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\opencode-model-gateway"
   $noProxy = "127.0.0.1,localhost,modelscope.cn,api-inference.modelscope.cn,api.cline.bot,api.atria-asi.ai,developer.amd.com.cn,api.deepseek.com"
   New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value @("HTTPS_PROXY=$UpdateProxy","HTTP_PROXY=$UpdateProxy","NO_PROXY=$noProxy") -Force | Out-Null
   Restart-Service -Name "opencode-model-gateway" -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 3
 } elseif ($NoUpdateProxy) {
-  Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\opencode-model-gateway" -Name Environment -Force -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path $svcKey -Name Environment -Force -ErrorAction SilentlyContinue
   Restart-Service -Name "opencode-model-gateway" -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 3
+} elseif ($oldEnv.Count -gt 0) {
+  # 服务重装会删除服务键（含 Environment）；未显式指定代理时保留旧值
+  New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value $oldEnv -Force | Out-Null
+  Restart-Service -Name "opencode-model-gateway" -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 3
+  Write-Host "Preserved existing service Environment (HTTPS_PROXY/HTTP_PROXY/NO_PROXY)." -ForegroundColor Yellow
 }
 
 if (-not $SkipFirewall) {
@@ -152,11 +161,14 @@ if (-not $SkipFirewall) {
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPaths = @()
+$desktop = [Environment]::GetFolderPath("Desktop")
 $public = [Environment]::GetFolderPath("CommonDesktopDirectory")
 if (-not $public) { $public = "C:\Users\Public\Desktop" }
-$shortcutPaths += (Join-Path $public "opencode Gateway.lnk")
-$desktop = [Environment]::GetFolderPath("Desktop")
-if ($desktop) { $shortcutPaths += (Join-Path $desktop "opencode Gateway.lnk") }
+$publicLnk = Join-Path $public "opencode Gateway.lnk"
+if (Test-Path $publicLnk) {
+  try { Remove-Item $publicLnk -Force } catch { Write-Host "WARN: could not remove $publicLnk" -ForegroundColor Yellow }
+}
+if ($desktop) { $shortcutPaths += (Join-Path $desktop "opencode Gateway.lnk") } else { $shortcutPaths += $publicLnk }
 foreach ($sp in $shortcutPaths) {
   $sc = $shell.CreateShortcut($sp)
   $sc.TargetPath = "$env:SystemRoot\System32\wscript.exe"

@@ -52,6 +52,18 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 		}})
 	}()
 	s <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	go func() {
+		log, _ := logx.New(filepath.Join(h.home, "logs"), 5*1024*1024, 3)
+		if err := EnsureCheckinTask(h.home); err != nil {
+			if log != nil {
+				log.Warn("checkin_task_ensure_failed", map[string]any{"error": err.Error()})
+			}
+			return
+		}
+		if log != nil {
+			log.Info("checkin_task_ready", map[string]any{"task": checkinTaskName})
+		}
+	}()
 	for {
 		select {
 		case err := <-errCh:
@@ -78,6 +90,59 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 
 func RunService(home, version string) error {
 	return svc.Run(serviceName, &handler{home: home, version: version})
+}
+
+const checkinTaskName = "WorkBuddy Daily Checkin"
+
+// EnsureCheckinTask writes the embedded check-in runner and registers the
+// SYSTEM scheduled task if it is missing. Called on service startup so a new
+// machine that only updates the gateway still gets the daily check-in job.
+func EnsureCheckinTask(home string) error {
+	mainScript, installScript := installer.WorkBuddyCheckinScripts()
+	if len(mainScript) == 0 || len(installScript) == 0 {
+		return errors.New("embedded check-in scripts are empty")
+	}
+	target := filepath.Join(home, "scripts", "workbuddy-checkin.ps1")
+	installTarget := filepath.Join(home, "scripts", "install-checkin-task.ps1")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(target, mainScript, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(installTarget, installScript, 0o644); err != nil {
+		return err
+	}
+	if checkinTaskExists() {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "gateway-checkin-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	installPath := filepath.Join(tmp, "install-checkin-task.ps1")
+	if err := os.WriteFile(installPath, installScript, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "workbuddy-checkin.ps1"), mainScript, 0o644); err != nil {
+		return err
+	}
+	ps := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	cmd := exec.Command(ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installPath,
+		"-SkipHealthCheck", "-TargetScript", target)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("register check-in task: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func checkinTaskExists() bool {
+	cmd := exec.Command("schtasks.exe", "/query", "/tn", checkinTaskName)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Run() == nil
 }
 
 func Install(home, version string) error {

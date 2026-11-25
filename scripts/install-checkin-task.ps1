@@ -3,13 +3,15 @@ param(
     [string]$SourceScript = "",
     [string]$TargetScript = "C:\ProgramData\opencode-model-gateway\scripts\workbuddy-checkin.ps1",
     [string]$LogDir = "C:\ProgramData\WorkBuddyCheckin",
-    [switch]$RunNow
+    [switch]$RunNow,
+    [switch]$SkipHealthCheck
 )
 
 $ErrorActionPreference = "Stop"
 
 function Assert-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($id.User.Value -eq "S-1-5-18") { return }
     $p = New-Object Security.Principal.WindowsPrincipal($id)
     if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "Please run this script as Administrator." -ForegroundColor Red
@@ -28,7 +30,11 @@ if (-not (Test-Path $SourceScript)) {
 
 $targetDir = Split-Path -Parent $TargetScript
 New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-Copy-Item -Path $SourceScript -Destination $TargetScript -Force
+$srcFull = (Resolve-Path $SourceScript).Path
+$dstFull = if (Test-Path $TargetScript) { (Resolve-Path $TargetScript).Path } else { $TargetScript }
+if ($srcFull -ne $dstFull) {
+    Copy-Item -Path $SourceScript -Destination $TargetScript -Force
+}
 Write-Host "Installed check-in script: $TargetScript"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -47,14 +53,13 @@ try {
     Write-Warning "Could not grant Users read access to ${LogDir}: $_"
 }
 
-try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8788/healthz" -TimeoutSec 5
-    Write-Host "Gateway version: $($health.version)"
-    if ([string]$health.version -ne "1.2.7" -and [string]$health.version -ne "1.2.7-local") {
-        Write-Warning "Gateway is not 1.2.7; the WorkBuddy check-in endpoint may be missing."
+if (-not $SkipHealthCheck) {
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8788/healthz" -TimeoutSec 5
+        Write-Host "Gateway version: $($health.version)"
+    } catch {
+        Write-Warning "Gateway health check failed: $_"
     }
-} catch {
-    Write-Warning "Gateway health check failed: $_"
 }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `

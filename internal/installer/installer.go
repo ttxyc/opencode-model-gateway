@@ -13,6 +13,19 @@ import (
 //go:embed assets
 var assets embed.FS
 
+//go:embed assets/scripts/workbuddy-checkin.ps1
+var workbuddyCheckinScript []byte
+
+//go:embed assets/scripts/install-checkin-task.ps1
+var workbuddyCheckinInstallScript []byte
+
+// WorkBuddyCheckinScripts returns the embedded daily check-in runner and its
+// task installer. The Windows service writes them out and registers the SYSTEM
+// task on startup so a new machine gets the feature without a separate install.
+func WorkBuddyCheckinScripts() (mainScript, installScript []byte) {
+	return workbuddyCheckinScript, workbuddyCheckinInstallScript
+}
+
 // Prepare extracts the installer assets and a copy of the running executable
 // into a per-run temp directory. The layout matches the release package:
 //

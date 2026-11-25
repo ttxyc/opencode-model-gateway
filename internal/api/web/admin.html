@@ -102,6 +102,21 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
       <div id="wbRegions" style="margin-top:10px"></div>
     </div>
 
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">WorkBuddy 每日签到</div>
+          <div class="muted small">网关代签 CN/国际区；SYSTEM 任务由网关启动时自动安装（开机 + 每天 10:00）；令牌不离开网关</div>
+        </div>
+        <div class="row">
+          <button id="checkinStatusBtn">查看状态</button>
+          <button class="primary" id="checkinRunBtn">立即签到</button>
+        </div>
+      </div>
+      <div id="checkinMsg" class="small" style="margin-top:8px"></div>
+      <div id="checkinResults" class="small" style="margin-top:8px"></div>
+    </div>
+
     <div id="providers" class="grid"></div>
 
     <div class="card">
@@ -277,6 +292,33 @@ async function wbModels(id){
     $("wbModels").innerHTML=`<div style="font-weight:600;margin-bottom:4px">在线模型目录（仅展示）</div>`+(rows||'<span class="muted">没有返回模型</span>');
     wbSay("ok","模型目录已更新");
   }catch(e){ wbSay("err",e.message); }
+}
+
+async function wbCheckin(dryRun){
+  const btn = dryRun ? $("checkinStatusBtn") : $("checkinRunBtn");
+  btn.disabled=true;
+  $("checkinMsg").className="muted small";
+  $("checkinMsg").textContent = dryRun ? "查询签到状态中…" : "执行签到中…";
+  try{
+    const r=await api("/admin/api/workbuddy/checkin",{method:"POST",body:JSON.stringify({region:"all",dryRun})});
+    const res=r.result||{};
+    $("checkinMsg").className = (res.failed>0) ? "err small" : "ok small";
+    $("checkinMsg").textContent = `success=${res.success||0} already=${res.already||0} eligible=${res.eligible||0} skipped=${res.skipped||0} failed=${res.failed||0} totalCredit=${res.totalCredit||0}`;
+    $("checkinResults").innerHTML = (res.results||[]).map(x=>{
+      const parts=[esc(x.label||x.id),esc(x.region),esc(x.state),`active=${x.active}`,`today=${x.todayCheckedIn}`];
+      if(x.credit) parts.push(`credit=${x.credit}`);
+      if(x.streakDays) parts.push(`streak=${x.streakDays}`);
+      if(x.message) parts.push(esc(x.message));
+      let line=`<div class="mono">${parts.join(" · ")}`;
+      if(x.error) line+=` <span class="err">${esc(x.error)}</span>`;
+      return line+"</div>";
+    }).join("");
+  }catch(e){
+    $("checkinMsg").className="err small";
+    $("checkinMsg").textContent=e.message;
+  }finally{
+    btn.disabled=false;
+  }
 }
 
 async function load(){
@@ -467,6 +509,8 @@ $("applyUpdateBtn").onclick=applyUpdate;
 $("wbImportBtn").onclick=wbImport;
 $("wbLoginCnBtn").onclick=()=>wbLogin("cn");
 $("wbLoginGlobalBtn").onclick=()=>wbLogin("global");
+$("checkinStatusBtn").onclick=()=>wbCheckin(true);
+$("checkinRunBtn").onclick=()=>{ if(confirm("立即执行 WorkBuddy 签到（已签会跳过）？")) wbCheckin(false); };
 
 if(state.token){ load().catch(e=>{ $("tokenBox").classList.remove("hidden"); $("loginErr").textContent=e.message; }); }
 </script>
