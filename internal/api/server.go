@@ -24,6 +24,7 @@ import (
 
 	"github.com/ttxyc/opencode-model-gateway/internal/config"
 	"github.com/ttxyc/opencode-model-gateway/internal/logx"
+	"github.com/ttxyc/opencode-model-gateway/internal/modelscope"
 	"github.com/ttxyc/opencode-model-gateway/internal/router"
 	"github.com/ttxyc/opencode-model-gateway/internal/workbuddy"
 )
@@ -97,6 +98,7 @@ type Server struct {
 
 	wb       *workbuddy.Manager
 	wbClient *http.Client
+	ms       *modelscope.Manager
 }
 
 func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *Server {
@@ -131,6 +133,8 @@ func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 	}}
+	s.ms = modelscope.NewManager(filepath.Dir(cfg.Paths.State), cfg.Paths.Logs)
+	s.setupModelScopeLogin()
 	if s.adminTok == "" {
 		s.adminTok = cfg.AdminToken
 	}
@@ -147,6 +151,8 @@ func rid() string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+func (s *Server) ModelScopeManager() *modelscope.Manager { return s.ms }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := rid()
@@ -337,14 +343,10 @@ func (s *Server) providerAuthorized(r *http.Request, provider string) bool {
 }
 
 func (s *Server) adminAuthorized(r *http.Request) bool {
-	if !isLoopback(r.RemoteAddr) {
-		return false
-	}
-	tok := r.Header.Get("X-Admin-Token")
-	if tok == "" {
-		tok = extractToken(r)
-	}
-	return constantEqual(tok, s.adminTok)
+	// Local admin no longer requires a token: the desktop shortcut opens
+	// http://127.0.0.1:8788/admin directly. Keep remote access token-gated
+	// (currently denied) so opening the admin port to the LAN cannot expose keys.
+	return isLoopback(r.RemoteAddr)
 }
 
 func extractToken(r *http.Request) string {

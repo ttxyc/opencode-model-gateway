@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf16"
+
+	"github.com/ttxyc/opencode-model-gateway/internal/modelscope"
 )
 
 const (
@@ -35,6 +38,7 @@ const (
 	wbPanelTask   = "Tools-WorkBuddy-Panel"
 	msRunTask     = "Tools-ModelScope-Run"
 	msRefreshTask = "Tools-ModelScope-Refresh"
+	msLoginTask   = "Tools-ModelScope-Login"
 	msAutoTask    = "ModelScope-Daily-Magicube"
 )
 
@@ -242,12 +246,9 @@ func taskExists(name string) bool {
 }
 
 func registerTask(name, command, arguments, sid string) error {
-	if err := ensureToolsFiles(); err != nil {
-		return err
-	}
-	if taskExists(name) {
-		return nil
-	}
+	// Always recreate with /F: the ModelScope login helper passes a new result
+	// path/account on every run, so reusing an old task definition would run
+	// stale arguments.
 	xml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Author>opencode-model-gateway</Author><URI>\%s</URI></RegistrationInfo>
@@ -379,6 +380,118 @@ func workBuddyToolRefreshToken() ([]byte, error) {
 		return nil, err
 	}
 	return runUserTaskSync(wbTokenTask, `C:\Windows\System32\wscript.exe`, `"`+toolsDir+`\wb-refresh-token.vbs"`, wbTokenFile, u.SID)
+}
+
+func (s *Server) setupModelScopeLogin() {
+	if s.ms == nil {
+		return
+	}
+	s.ms.SetLoginFunc(func(ctx context.Context, acc modelscope.Account) (string, error) {
+		return s.modelScopeLogin(ctx, acc)
+	})
+}
+
+func safeProfileName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "account"
+	}
+	return b.String()
+}
+
+func quoteTaskArg(v string) string {
+	if v == "" {
+		return `""`
+	}
+	if strings.ContainsAny(v, " \t\"") {
+		return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
+	}
+	return v
+}
+
+func (s *Server) modelScopeLogin(ctx context.Context, acc modelscope.Account) (string, error) {
+	u, err := interactiveUser()
+	if err != nil {
+		return "", err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	resultPath := filepath.Join(`C:\Users`, u.Name, `AppData\Local\Temp`, fmt.Sprintf("opencode-ms-login-%d.json", time.Now().UnixNano()))
+	profileName := acc.MsName
+	if profileName == "" {
+		profileName = acc.Name
+	}
+	profile := filepath.Join(`C:\Users`, u.Name, `AppData\Local\opencode-model-gateway\login-profile`, "modelscope-"+safeProfileName(profileName))
+	passPath := filepath.Join(`C:\Users`, u.Name, `AppData\Local\Temp`, fmt.Sprintf("opencode-ms-pass-%d.txt", time.Now().UnixNano()))
+	_ = os.Remove(resultPath)
+	if acc.Password != "" {
+		if err := os.WriteFile(passPath, []byte(acc.Password), 0o600); err != nil {
+			return "", fmt.Errorf("写入临时密码文件失败: %w", err)
+		}
+		defer os.Remove(passPath)
+	}
+	username := acc.MsName
+	if username == "" {
+		username = acc.Name
+	}
+	argsList := []string{
+		"--login-helper",
+		"--provider=modelscope",
+		"--account=" + quoteTaskArg(acc.Name),
+		"--ms-name=" + quoteTaskArg(acc.MsName),
+		"--username=" + quoteTaskArg(username),
+		"--login-url=" + quoteTaskArg("https://www.modelscope.cn/login"),
+		"--result=" + quoteTaskArg(resultPath),
+		"--profile=" + quoteTaskArg(profile),
+	}
+	if acc.Password != "" {
+		argsList = append(argsList, "--password-file="+quoteTaskArg(passPath))
+	}
+	args := strings.Join(argsList, " ")
+	if err := registerTask(msLoginTask, exe, args, u.SID); err != nil {
+		return "", err
+	}
+	if err := triggerTask(msLoginTask); err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(6 * time.Minute)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		if b, err := os.ReadFile(resultPath); err == nil {
+			var res struct {
+				OK        bool   `json:"ok"`
+				LoginName string `json:"loginName"`
+				Cookie    string `json:"cookie"`
+				Error     string `json:"error"`
+			}
+			if json.Unmarshal(b, &res) == nil {
+				_ = os.Remove(resultPath)
+				if !res.OK {
+					if res.Error == "" {
+						res.Error = "登录失败"
+					}
+					return "", errors.New(res.Error)
+				}
+				if res.Cookie == "" {
+					return "", errors.New("登录助手没有返回 Cookie")
+				}
+				return res.Cookie, nil
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return "", errors.New("等待浏览器登录超时")
 }
 
 func workBuddyToolPanel() error {

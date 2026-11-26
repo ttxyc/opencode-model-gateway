@@ -18,7 +18,7 @@ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin-b
 .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:#aab3c5;white-space:nowrap}
 .tag.ok{color:var(--ok);border-color:#1d5a40}.tag.warn{color:var(--warn);border-color:#5a4720}.tag.bad{color:var(--bad);border-color:#5a2a2e}.tag.info{color:var(--accent);border-color:#2b3a56}.tag.locked{color:#e0e5ef;border-color:#4a5568;background:#252b36}
 button{font:inherit;border-radius:7px;border:1px solid var(--line);background:#1d2430;color:var(--fg);padding:7px 11px;cursor:pointer}
-button:hover{filter:brightness(1.08)}button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}button:disabled{opacity:.5;cursor:not-allowed}
+button:hover{filter:brightness(1.08)}button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}button:disabled{opacity:.5;cursor:not-allowed}button.danger{color:var(--bad);border-color:#5a2a2e}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:14px}
 @media(max-width:760px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .stat{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:11px 12px}
@@ -72,8 +72,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
       <div class="row actions">
         <button class="primary" id="wbClaimBtn" disabled>领取可领</button>
         <button id="wbRefreshBtn">巡检一次</button>
-        <button id="wbRefreshTokenBtn" title="调用 WorkBuddy 刷新接口，更新 DSH 凭据里的 access/refresh token">刷新 Token</button>
-        <button id="wbPanelBtn">打开完整面板</button>
+        <button id="wbRefreshTokenBtn" title="刷新网关 WorkBuddy 账号池的 access/refresh token">刷新 Token</button>
       </div>
       <div id="wbMsg" class="small" style="margin-top:8px"></div>
       <div class="card-split">
@@ -107,13 +106,25 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
         <button class="primary" id="msRunBtn">立即运行</button>
         <button id="msLogBtn">查看日志</button>
         <button id="msRefreshCookieBtn">刷新 Cookie</button>
+        <button id="msAddBtn">添加账号</button>
       </div>
       <div id="msMsg" class="small" style="margin-top:8px"></div>
+      <div id="msAddForm" class="mini hidden" style="margin-top:10px">
+        <div class="row">
+          <input id="msAddName" placeholder="账号名（本地标识）" style="padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);min-width:150px">
+          <input id="msAddMsName" placeholder="魔搭登录名（可选）" style="padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);min-width:150px">
+          <input id="msAddPassword" type="password" autocomplete="new-password" placeholder="密码（仅本地保存）" style="padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);min-width:150px">
+          <input id="msAddArticle" placeholder="文章ID（可空）" style="padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:#0d1016;color:var(--fg);min-width:110px">
+          <button class="primary" id="msAddSaveBtn">保存</button>
+          <button id="msAddCancelBtn">取消</button>
+        </div>
+        <div class="muted small" style="margin-top:5px">密码仅保存在本机网关状态目录；保存后点账号行「重新登录」，网关会打开浏览器登录并自动抓新 Cookie。</div>
+      </div>
       <div class="card-split">
         <div>
           <div class="section-head"><div class="section-title">账号状态</div><span class="muted small" id="msStateHint">—</span></div>
-          <table><thead><tr><th>账号</th><th>启用</th><th style="text-align:right">今日</th></tr></thead><tbody id="msAccountList"><tr><td colspan="3" class="muted">读取中…</td></tr></tbody></table>
-          <div class="foot" id="msFoot">计划任务 ModelScope-Daily-Magicube · 登录 + 每天 10:00</div>
+          <table><thead><tr><th>账号</th><th>启用</th><th>今日</th><th style="text-align:right">操作</th></tr></thead><tbody id="msAccountList"><tr><td colspan="4" class="muted">读取中…</td></tr></tbody></table>
+          <div class="foot" id="msFoot">内置调度 · 每天 10:00 · Cookie 失效时自动打开浏览器登录</div>
         </div>
         <aside class="side">
           <div class="mini">
@@ -144,7 +155,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;
       <div id="checkinMsg" class="small" style="margin-top:8px"></div>
     </section>
 
-    <div class="footer-note">工具中心 · 数据来自本机项目；WorkBuddy 面板以独立窗口打开；ModelScope 任务在用户会话中执行</div>
+    <div class="footer-note">工具中心 · 数据来自网关内置模块；WorkBuddy 使用网关账号池；ModelScope 由网关内部调度并自动打开浏览器登录</div>
   </div>
 </div>
 <script>
@@ -197,7 +208,7 @@ function showMain(){ $("tokenBox").classList.add("hidden"); $("main").classList.
 async function loadAll(){
   $("sub").textContent = "加载中…";
   await Promise.allSettled([loadWB(), loadMS(), loadCheckin()]);
-  $("sub").textContent = "工具中心 · 数据来自本机项目";
+  $("sub").textContent = "工具中心 · 数据来自网关内置模块";
 }
 
 function wbSetMsg(text, cls){ $("wbMsg").className = (cls||"muted")+" small"; $("wbMsg").textContent = text; }
@@ -321,18 +332,6 @@ async function refreshWBToken(){
   }
 }
 
-async function openPanel(){
-  $("wbPanelBtn").disabled = true;
-  wbSetMsg("正在打开独立面板…","muted");
-  try{
-    const r = await api("/admin/api/tools/workbuddy/panel",{method:"POST",body:"{}"});
-    wbSetMsg(r.message || "已打开独立窗口","ok");
-  }catch(e){
-    wbSetMsg("打开面板失败：" + e.message,"err");
-  }finally{
-    $("wbPanelBtn").disabled = false;
-  }
-}
 
 async function loadMS(){
   if(state.msLoading) return;
@@ -362,17 +361,20 @@ function renderMS(d){
   $("msLast").textContent = last ? fmtShortTime(last) : "—";
   $("msLastHint").textContent = d.doneAt ? "状态文件" : "最近动作";
   const auto = d.autoTask || {};
-  const autoState = auto.exists ? (auto.state || "未知") : "未安装";
-  $("msAuto").textContent = autoState === "Disabled" ? "已禁用" : autoState;
-  $("msAutoHint").textContent = auto.exists ? "登录 + 每天 10:00" : "未注册";
+  const autoState = auto.exists ? (auto.state || "未知") : "未启用";
+  const autoText = autoState === "Disabled" ? "已禁用" : (autoState === "Enabled" ? "已启用" : autoState);
+  $("msAuto").textContent = autoText;
+  $("msAutoHint").textContent = auto.exists ? "内置调度 · 每天 10:00" : "未启用";
   $("msAuto").style.color = autoState === "Disabled" ? "var(--warn)" : "";
-  $("msSub").textContent = `账号 ${accounts.length} 个 · 自动任务 ${autoState === "Disabled" ? "已禁用（手动运行可用）" : autoState}`;
+  $("msSub").textContent = `账号 ${accounts.length} 个 · 内置调度 ${autoText}`;
   $("msStateHint").textContent = d.doneToday ? `完成于 ${fmtShortTime(d.doneAt)}` : "今日尚未完成";
   $("msAccountList").innerHTML = accounts.map(a=>{
     const doneTag = !a.enabled ? tag("已停用","") : (d.doneToday && a.done ? tag("完成","ok") : tag("待运行","warn"));
-    return `<tr><td class="mono">${esc(a.name)}</td><td>${a.enabled?tag("启用","ok"):tag("停用","")}</td><td style="text-align:right">${doneTag}</td></tr>`;
-  }).join("") || '<tr><td colspan="3" class="muted">暂无账号</td></tr>';
-  $("msFoot").textContent = `计划任务 ${d.autoTask && d.autoTask.exists ? "ModelScope-Daily-Magicube" : "未注册"} · 登录 + 每天 10:00 · 当前：${autoState}`;
+    return `<tr><td class="mono">${esc(a.name)}</td><td>${a.enabled?tag("启用","ok"):tag("停用","")}</td><td>${doneTag}</td><td style="text-align:right;white-space:nowrap"><button class="small" data-ms-login="${esc(a.name)}">重新登录</button> <button class="danger small" data-ms-del="${esc(a.name)}">删除</button></td></tr>`;
+  }).join("") || '<tr><td colspan="4" class="muted">暂无账号</td></tr>';
+  document.querySelectorAll("[data-ms-login]").forEach(b=>b.onclick=()=>msLogin(b.dataset.msLogin));
+  document.querySelectorAll("[data-ms-del]").forEach(b=>b.onclick=()=>msRemoveAccount(b.dataset.msDel));
+  $("msFoot").textContent = `内置调度 · 每天 10:00 · 当前：${autoText}`;
   $("msLogFile").textContent = d.logFile ? d.logFile.split(/[\\/]/).pop() : "—";
   $("msLog").textContent = fmtLogText(d.logTail || "暂无日志");
   const candidates = [d.run, d.refresh].filter(Boolean);
@@ -458,6 +460,43 @@ async function msAction(action){
   }
 }
 
+async function msLogin(name){
+  msSetMsg(`请在浏览器中登录 ${name}…（最多 5 分钟，登录后自动抓取 Cookie）`,"muted");
+  try{
+    const r = await api("/admin/api/tools/modelscope/login",{method:"POST",body:JSON.stringify({name})});
+    msSetMsg("登录成功：" + (r.loginName || name) + "，Cookie 已更新","ok");
+    await loadMS();
+  }catch(e){
+    msSetMsg("登录失败：" + e.message,"err");
+  }
+}
+async function msRemoveAccount(name){
+  if(!confirm("删除 ModelScope 账号 "+name+"？")) return;
+  try{
+    await api("/admin/api/tools/modelscope/remove",{method:"POST",body:JSON.stringify({name})});
+    msSetMsg("已删除账号 "+name,"ok");
+    await loadMS();
+  }catch(e){ msSetMsg("删除失败：" + e.message,"err"); }
+}
+async function msAddAccount(){
+  $("msAddForm").classList.remove("hidden");
+  $("msAddName").focus();
+}
+async function msSaveAccount(){
+  const name=$("msAddName").value.trim();
+  if(!name){ msSetMsg("账号名不能为空","err"); return; }
+  try{
+    await api("/admin/api/tools/modelscope/account",{method:"POST",body:JSON.stringify({
+      name, msName:$("msAddMsName").value.trim(), password:$("msAddPassword").value,
+      article:$("msAddArticle").value.trim(), enabled:true
+    })});
+    $("msAddForm").classList.add("hidden");
+    $("msAddName").value=""; $("msAddMsName").value=""; $("msAddPassword").value=""; $("msAddArticle").value="";
+    msSetMsg("已保存账号 "+name+"，可点该行「重新登录」抓取 Cookie","ok");
+    await loadMS();
+  }catch(e){ msSetMsg("保存失败：" + e.message,"err"); }
+}
+
 async function loadCheckin(dryRun=true){
   try{
     const r = await api("/admin/api/workbuddy/checkin",{method:"POST",body:JSON.stringify({region:"all",dryRun})});
@@ -495,15 +534,16 @@ $("refreshBtn").onclick = ()=>loadAll();
 $("wbRefreshBtn").onclick = ()=>loadWB();
 $("wbRefreshTokenBtn").onclick = ()=>refreshWBToken();
 $("wbClaimBtn").onclick = ()=>claimWB();
-$("wbPanelBtn").onclick = ()=>openPanel();
 $("msRunBtn").onclick = ()=>msAction("run");
 $("msRefreshCookieBtn").onclick = ()=>msAction("refresh");
 $("msLogBtn").onclick = async ()=>{ await loadMS(); $("msLog").scrollIntoView({behavior:"smooth",block:"center"}); };
+$("msAddBtn").onclick = ()=>msAddAccount();
+$("msAddSaveBtn").onclick = ()=>msSaveAccount();
+$("msAddCancelBtn").onclick = ()=>$("msAddForm").classList.add("hidden");
 $("checkinStatusBtn").onclick = ()=>loadCheckin(true);
 $("checkinRunBtn").onclick = ()=>checkinRun();
 
 (async function start(){
-  if(!state.token){ showToken(); return; }
   showMain();
   await loadAll();
 })();

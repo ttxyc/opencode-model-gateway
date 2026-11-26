@@ -534,7 +534,7 @@ $("wbLoginGlobalBtn").onclick=()=>wbLogin("global");
 $("checkinStatusBtn").onclick=()=>wbCheckin(true);
 $("checkinRunBtn").onclick=()=>{ if(confirm("立即执行 WorkBuddy 签到（已签会跳过）？")) wbCheckin(false); };
 
-if(state.token){ load().catch(e=>{ $("tokenBox").classList.remove("hidden"); $("loginErr").textContent=e.message; }); }
+load().catch(e=>{ $("tokenBox").classList.remove("hidden"); $("loginErr").textContent=e.message; });
 </script>
 </body>
 </html>

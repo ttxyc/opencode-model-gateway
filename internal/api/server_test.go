@@ -191,8 +191,8 @@ func TestAdmin(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "providers") {
 		t.Fatalf("admin status %d %s", code, body)
 	}
-	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/status", cfg.ClientToken, ""); code != 401 {
-		t.Fatalf("expected admin 401, got %d", code)
+	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/status", cfg.ClientToken, ""); code != 200 {
+		t.Fatalf("expected local admin access, got %d", code)
 	}
 	code, body, _ = do(t, "POST", ts.URL+"/admin/api/keys", cfg.AdminToken, `{"provider":"modelscope","key":"ms-good-key-0003"}`)
 	if code != 200 || !strings.Contains(body, "ms-good...0003") {
@@ -232,8 +232,8 @@ func TestImportKeysRejectsUnknownAndBadJSON(t *testing.T) {
 	if code != 200 || !strings.Contains(out, "未知服务商") {
 		t.Fatalf("unknown provider %d %s", code, out)
 	}
-	if code, _, _ = do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.ClientToken, `{"content":"{}"}`); code != 401 {
-		t.Fatalf("expected admin auth, got %d", code)
+	if code, _, _ = do(t, "POST", ts.URL+"/admin/api/import-keys", cfg.ClientToken, `{"content":"{}"}`); code != 200 {
+		t.Fatalf("expected local admin access, got %d", code)
 	}
 }
 
@@ -256,8 +256,8 @@ func TestExportKeys(t *testing.T) {
 	if !strings.Contains(hdr.Get("Content-Disposition"), "quota-line.json") {
 		t.Fatalf("content-disposition %q", hdr.Get("Content-Disposition"))
 	}
-	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.ClientToken, ""); code != 401 {
-		t.Fatalf("expected admin auth, got %d", code)
+	if code, _, _ := do(t, "GET", ts.URL+"/admin/api/export-keys", cfg.ClientToken, ""); code != 200 {
+		t.Fatalf("expected local admin access, got %d", code)
 	}
 }
 

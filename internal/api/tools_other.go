@@ -17,3 +17,5 @@ func modelScopeToolStatus() (any, error)                  { return nil, errTools
 func modelScopeToolAction(action string) (any, error) {
 	return nil, errToolsWindowsOnly
 }
+
+func (s *Server) setupModelScopeLogin() {}

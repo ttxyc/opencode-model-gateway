@@ -55,6 +55,7 @@ func Run(ctx context.Context, home string, opts Options) error {
 		Version: opts.Version, StartedAt: time.Now(), Update: update, ApplyUpdate: opts.ApplyFunc,
 		AdminToken: cfg.AdminToken, ClientToken: cfg.ClientToken,
 	})
+	go runModelScopeScheduler(ctx, server.ModelScopeManager(), log)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Bind, cfg.Port))
 	if err != nil {
@@ -131,6 +132,45 @@ func Run(ctx context.Context, home string, opts Options) error {
 		case <-updateTicker.C:
 			if updateMgr != nil {
 				go checkUpdate(ctx, updateMgr, log, cfg.Update.AllowRestart)
+			}
+		}
+	}
+}
+
+func runModelScopeScheduler(ctx context.Context, ms interface {
+	StartRun(force bool) (map[string]any, error)
+}, log *logx.Logger) {
+	if ms == nil {
+		return
+	}
+	// Startup catch-up: run if today has not completed yet.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(45 * time.Second):
+		}
+		if _, err := ms.StartRun(false); err != nil {
+			log.Info("modelscope_daily_skipped", map[string]any{"error": logx.Redact(err.Error(), 200)})
+		}
+	}()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	last := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t := <-ticker.C:
+			if t.Hour() == 10 && t.Minute() < 10 {
+				day := t.Format("2006-01-02")
+				if last == day {
+					continue
+				}
+				last = day
+				if _, err := ms.StartRun(false); err != nil {
+					log.Info("modelscope_daily_skipped", map[string]any{"error": logx.Redact(err.Error(), 200)})
+				}
 			}
 		}
 	}
