@@ -166,6 +166,29 @@ func TestCheckRejectsUnsigned(t *testing.T) {
 
 var _ = io.EOF
 
+func TestForceCheckBypassesCache(t *testing.T) {
+	version := "1.1.0"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Manifest{Version: version, Asset: "https://example/gateway.exe"})
+	}))
+	defer srv.Close()
+
+	m := &Manager{Home: t.TempDir(), Version: "1.0.0", ManifestURL: srv.URL + "/latest.json", Client: srv.Client()}
+	st, err := m.Check(context.Background())
+	if err != nil || st.Latest != "1.1.0" {
+		t.Fatalf("first check: %+v err=%v", st, err)
+	}
+	version = "1.2.0"
+	st, err = m.Check(context.Background())
+	if err != nil || st.Latest != "1.1.0" {
+		t.Fatalf("cached check: %+v err=%v", st, err)
+	}
+	st, err = m.ForceCheck(context.Background())
+	if err != nil || st.Latest != "1.2.0" || !st.Available {
+		t.Fatalf("forced check: %+v err=%v", st, err)
+	}
+}
+
 func TestCheckRetriesAfterFailure(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

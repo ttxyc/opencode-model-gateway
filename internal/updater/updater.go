@@ -245,6 +245,16 @@ func (m *Manager) Check(ctx context.Context) (api.UpdateStatus, error) {
 	return st, err
 }
 
+// ForceCheck bypasses the 10-minute result cache used by background checks.
+// The admin page uses it so "检查更新" always sees a just-published release.
+func (m *Manager) ForceCheck(ctx context.Context) (api.UpdateStatus, error) {
+	m.mu.Lock()
+	m.cachedAt = time.Time{}
+	m.cachedErr = nil
+	m.mu.Unlock()
+	return m.Check(ctx)
+}
+
 func (m *Manager) check(ctx context.Context) (api.UpdateStatus, error) {
 	out := api.UpdateStatus{Current: m.Version}
 	if m.ManifestURL == "" {

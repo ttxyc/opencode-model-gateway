@@ -60,6 +60,7 @@ type UpdateProgress struct {
 
 type UpdateManager interface {
 	Check(ctx context.Context) (UpdateStatus, error)
+	ForceCheck(ctx context.Context) (UpdateStatus, error)
 	Apply(ctx context.Context) (UpdateStatus, error)
 	Enabled() bool
 	Cached() UpdateStatus
@@ -832,7 +833,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 			writeError(w, http.StatusBadRequest, "自动更新未启用", "invalid_request_error", "update_disabled", requestID)
 			return http.StatusBadRequest
 		}
-		st, err := s.update.Check(r.Context())
+		st, err := s.update.ForceCheck(r.Context())
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error(), "update_error", "update_check_failed", requestID)
 			return http.StatusBadGateway
