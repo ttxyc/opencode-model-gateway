@@ -102,11 +102,12 @@ type Server struct {
 	wbClient *http.Client
 	ms       *modelscope.Manager
 
-	modelsMu sync.RWMutex
-	mdMu     sync.Mutex
-	mdIndex  map[string][]mdHit
-	mdAt     time.Time
-	mdErr    string
+	modelsMu       sync.RWMutex
+	catalogWriteMu sync.Mutex
+	mdMu           sync.Mutex
+	mdIndex        map[string][]mdHit
+	mdAt           time.Time
+	mdErr          string
 }
 
 func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *Server {

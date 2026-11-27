@@ -59,6 +59,7 @@ type catalogProvider struct {
 	Configured []string       `json:"configured"`
 	Models     []catalogModel `json:"models"`
 	Fetched    bool           `json:"fetched"`
+	Removed    []string       `json:"removed,omitempty"`
 	Error      string         `json:"error,omitempty"`
 }
 
@@ -91,7 +92,7 @@ func (s *Server) loadCatalog() {
 			continue
 		}
 		if ps.Models != nil {
-			p.Models = append([]string(nil), ps.Models...)
+			p.Models = cloneStrings(ps.Models)
 		}
 		if ps.Meta != nil {
 			p.ModelMeta = cloneMetaMap(ps.Meta)
@@ -106,7 +107,7 @@ func (s *Server) snapshotProviders() []providerSnapshot {
 	for id, p := range s.cfg.Providers {
 		out = append(out, providerSnapshot{
 			ID: id, Label: p.Label, Kind: p.Kind,
-			Models: append([]string(nil), p.Models...),
+			Models: cloneStrings(p.Models),
 			Meta:   cloneMetaMap(p.ModelMeta),
 		})
 	}
@@ -123,9 +124,15 @@ func (s *Server) snapshotProvider(id string) (providerSnapshot, bool) {
 	}
 	return providerSnapshot{
 		ID: id, Label: p.Label, Kind: p.Kind,
-		Models: append([]string(nil), p.Models...),
+		Models: cloneStrings(p.Models),
 		Meta:   cloneMetaMap(p.ModelMeta),
 	}, true
+}
+
+func cloneStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func cloneMetaMap(in map[string]*config.ModelMeta) map[string]*config.ModelMeta {
@@ -143,7 +150,7 @@ func (s *Server) catalogSnapshot() []catalogProvider {
 	snaps := s.snapshotProviders()
 	out := make([]catalogProvider, 0, len(snaps))
 	for _, p := range snaps {
-		cp := catalogProvider{ID: p.ID, Label: p.Label, Kind: p.Kind, Configured: append([]string(nil), p.Models...)}
+		cp := catalogProvider{ID: p.ID, Label: p.Label, Kind: p.Kind, Configured: cloneStrings(p.Models)}
 		for _, m := range p.Models {
 			cp.Models = append(cp.Models, catalogModel{ID: m, Configured: true, Meta: p.Meta[m]})
 		}
@@ -169,6 +176,7 @@ func (s *Server) handleCatalogCheck(w http.ResponseWriter, r *http.Request, requ
 	var body struct {
 		Provider  string `json:"provider"`
 		Overwrite bool   `json:"overwrite"`
+		Prune     bool   `json:"prune"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "JSON 无效", "invalid_request_error", "invalid_json", requestID)
@@ -206,7 +214,7 @@ func (s *Server) handleCatalogCheck(w http.ResponseWriter, r *http.Request, requ
 				if v := recover(); v != nil {
 					ch <- result{cp: catalogProvider{
 						ID: p.ID, Label: p.Label, Kind: p.Kind,
-						Configured: append([]string(nil), p.Models...),
+						Configured: cloneStrings(p.Models),
 						Error:      fmt.Sprintf("内部错误: %v", v),
 					}}
 				}
@@ -221,6 +229,65 @@ func (s *Server) handleCatalogCheck(w http.ResponseWriter, r *http.Request, requ
 		out = append(out, (<-ch).cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if body.Prune {
+		for i := range out {
+			cp := &out[i]
+			if !cp.Fetched || cp.Error != "" {
+				continue
+			}
+			upstream := map[string]bool{}
+			for _, m := range cp.Models {
+				if m.Upstream {
+					upstream[m.ID] = true
+				}
+			}
+			if len(upstream) == 0 {
+				continue
+			}
+			retained := make([]string, 0, len(cp.Configured))
+			removed := make([]string, 0)
+			for _, m := range cp.Models {
+				if !m.Configured {
+					continue
+				}
+				if !m.Upstream {
+					removed = append(removed, m.ID)
+					continue
+				}
+				retained = append(retained, m.ID)
+			}
+			if len(removed) == 0 {
+				continue
+			}
+			var existingMeta map[string]*config.ModelMeta
+			for _, sp := range snaps {
+				if sp.ID == cp.ID {
+					existingMeta = sp.Meta
+					break
+				}
+			}
+			meta := map[string]*config.ModelMeta{}
+			for _, id := range retained {
+				if existingMeta[id] != nil {
+					meta[id] = existingMeta[id]
+				}
+			}
+			if err := s.persistProviderCatalog(cp.ID, retained, meta); err != nil {
+				cp.Error = "移除上游已删除模型失败: " + err.Error()
+				continue
+			}
+			cp.Removed = removed
+			cp.Configured = retained
+			kept := cp.Models[:0]
+			for _, m := range cp.Models {
+				if m.Configured && !m.Upstream {
+					continue
+				}
+				kept = append(kept, m)
+			}
+			cp.Models = kept
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "checkedAt": time.Now().UTC().Format(time.RFC3339),
 		"modelsDev": mdStatus, "providers": out,
@@ -231,7 +298,7 @@ func (s *Server) handleCatalogCheck(w http.ResponseWriter, r *http.Request, requ
 func (s *Server) buildCatalogProvider(ctx context.Context, p providerSnapshot, index map[string][]mdHit, overwrite bool) catalogProvider {
 	cp := catalogProvider{
 		ID: p.ID, Label: p.Label, Kind: p.Kind,
-		Configured: append([]string(nil), p.Models...),
+		Configured: cloneStrings(p.Models),
 	}
 	upstream, err := s.fetchProviderModels(ctx, p)
 	if err != nil {
@@ -382,6 +449,8 @@ func (s *Server) handleCatalogApply(w http.ResponseWriter, r *http.Request, requ
 		writeError(w, http.StatusBadRequest, "没有要保存的模型目录", "invalid_request_error", "invalid_input", requestID)
 		return http.StatusBadRequest
 	}
+	s.catalogWriteMu.Lock()
+	defer s.catalogWriteMu.Unlock()
 	snaps := s.snapshotProviders()
 	current := make(map[string]providerSnapshot, len(snaps))
 	for _, p := range snaps {
@@ -389,7 +458,7 @@ func (s *Server) handleCatalogApply(w http.ResponseWriter, r *http.Request, requ
 	}
 	st := catalogState{Version: catalogFileVersion, UpdatedAt: time.Now().UTC().Format(time.RFC3339), Providers: map[string]*catalogProviderState{}}
 	for _, p := range snaps {
-		st.Providers[p.ID] = &catalogProviderState{Models: append([]string(nil), p.Models...), Meta: cloneMetaMap(p.Meta)}
+		st.Providers[p.ID] = &catalogProviderState{Models: cloneStrings(p.Models), Meta: cloneMetaMap(p.Meta)}
 	}
 	for pid, upd := range body.Providers {
 		p, ok := current[pid]
@@ -416,13 +485,37 @@ func (s *Server) handleCatalogApply(w http.ResponseWriter, r *http.Request, requ
 		if p == nil {
 			continue
 		}
-		p.Models = append([]string(nil), ps.Models...)
+		p.Models = cloneStrings(ps.Models)
 		p.ModelMeta = cloneMetaMap(ps.Meta)
 	}
 	s.modelsMu.Unlock()
 	s.log.Info("model_catalog_saved", map[string]any{"providers": len(body.Providers)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "providers": s.catalogSnapshot()})
 	return http.StatusOK
+}
+
+func (s *Server) persistProviderCatalog(pid string, models []string, meta map[string]*config.ModelMeta) error {
+	s.catalogWriteMu.Lock()
+	defer s.catalogWriteMu.Unlock()
+	snaps := s.snapshotProviders()
+	st := catalogState{Version: catalogFileVersion, UpdatedAt: time.Now().UTC().Format(time.RFC3339), Providers: map[string]*catalogProviderState{}}
+	for _, p := range snaps {
+		if p.ID == pid {
+			st.Providers[pid] = &catalogProviderState{Models: cloneStrings(models), Meta: cloneMetaMap(meta)}
+			continue
+		}
+		st.Providers[p.ID] = &catalogProviderState{Models: cloneStrings(p.Models), Meta: cloneMetaMap(p.Meta)}
+	}
+	if err := s.saveCatalog(st); err != nil {
+		return err
+	}
+	s.modelsMu.Lock()
+	if p := s.cfg.Providers[pid]; p != nil {
+		p.Models = cloneStrings(models)
+		p.ModelMeta = cloneMetaMap(meta)
+	}
+	s.modelsMu.Unlock()
+	return nil
 }
 
 func (s *Server) saveCatalog(st catalogState) error {

@@ -200,6 +200,85 @@ func TestCatalogApplyAndModelsMetadata(t *testing.T) {
 	}
 }
 
+func TestCatalogEmptyModelsPersist(t *testing.T) {
+	ts, _, cfg, _ := newTestServer(t)
+	code, out, _ := do(t, "POST", ts.URL+"/admin/api/model-catalog/apply", cfg.AdminToken, `{"providers":{"deepseek":{"models":[]}}}`)
+	if code != 200 {
+		t.Fatalf("apply %d %s", code, out)
+	}
+	if len(cfg.Providers["deepseek"].Models) != 0 {
+		t.Fatalf("models %v", cfg.Providers["deepseek"].Models)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(cfg.Paths.State), "model-catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st catalogState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Providers["deepseek"] == nil || st.Providers["deepseek"].Models == nil {
+		t.Fatalf("empty model list became null: %s", raw)
+	}
+}
+
+func TestCatalogCheckPrunesMissingModels(t *testing.T) {
+	old := modelsDevURL
+	modelsDevURL = ""
+	t.Cleanup(func() { modelsDevURL = old })
+
+	ts, _, cfg, _ := newTestServer(t)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-flash","context_length":1000000,"max_completion_tokens":384000,"modalities":{"input":["text"]},"reasoning":true}]}`))
+	}))
+	defer mock.Close()
+	cfg.Providers["deepseek"].Models = []string{"deepseek-v4-pro", "deepseek-flash"}
+	cfg.Providers["deepseek"].BaseURL = mock.URL + "/v1"
+
+	code, out, _ := do(t, "POST", ts.URL+"/admin/api/model-catalog/check", cfg.AdminToken, `{"provider":"deepseek","prune":true}`)
+	if code != 200 {
+		t.Fatalf("check %d %s", code, out)
+	}
+	var resp struct {
+		Providers []catalogProvider `json:"providers"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Providers) != 1 {
+		t.Fatalf("providers %+v", resp.Providers)
+	}
+	p := resp.Providers[0]
+	if strings.Join(p.Removed, ",") != "deepseek-v4-pro" {
+		t.Fatalf("removed %v", p.Removed)
+	}
+	if strings.Join(p.Configured, ",") != "deepseek-flash" {
+		t.Fatalf("configured %v", p.Configured)
+	}
+	for _, m := range p.Models {
+		if m.ID == "deepseek-v4-pro" {
+			t.Fatalf("removed model still in catalog: %+v", p.Models)
+		}
+	}
+	cfgModels := cfg.Providers["deepseek"].Models
+	if len(cfgModels) != 1 || cfgModels[0] != "deepseek-flash" {
+		t.Fatalf("config models %v", cfgModels)
+	}
+	code, out, _ = do(t, "GET", ts.URL+"/v1/models", cfg.ClientToken, "")
+	if code != 200 || strings.Contains(out, "deepseek-v4-pro") || !strings.Contains(out, "deepseek-flash") {
+		t.Fatalf("models after prune %d %s", code, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(cfg.Paths.State), "model-catalog.json"))
+	if err != nil || strings.Contains(string(raw), "deepseek-v4-pro") {
+		t.Fatalf("state after prune: %v %s", err, raw)
+	}
+}
+
 func TestCatalogCheckFallsBackToModelsDev(t *testing.T) {
 	md := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
