@@ -7,7 +7,23 @@
     "modelscope": {
       "label": "ModelScope 魔搭",
       "baseURL": "https://api-inference.modelscope.cn/v1",
-      "models": ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai/DeepSeek-V4-Pro-0813"]
+      "models": ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai/DeepSeek-V4-Pro-0813"],
+      "modelMeta": {
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+          "context": 1048576,
+          "maxOutput": 384000,
+          "reasoning": true,
+          "reasoningLevels": ["low", "high", "max"],
+          "reasoningParam": "reasoning_effort",
+          "image": true,
+          "sources": {
+            "context": "manual",
+            "maxOutput": "manual",
+            "reasoning": "manual",
+            "image": "manual"
+          }
+        }
+      }
     },
     "cline": {
       "label": "Cline",

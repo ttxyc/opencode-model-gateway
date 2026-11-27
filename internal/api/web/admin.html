@@ -129,6 +129,27 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
 
     <div id="providers" class="grid"></div>
 
+    <div class="card" id="catalogCard">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:600">模型目录与元数据</div>
+          <div class="muted small">检查各平台上游模型，维护上下文长度 / 最大输出 / 推理强度 / 图片输入；保存后 /v1/models 直接返回这些字段</div>
+        </div>
+        <div class="row">
+          <label class="muted small"><input id="catalogOverwrite" type="checkbox"> 覆盖已有元数据</label>
+          <button class="primary" id="catalogCheckBtn">检查全部平台</button>
+          <button id="catalogApplyBtn" disabled>应用更改</button>
+        </div>
+      </div>
+      <div class="muted small" style="margin-top:8px">
+        任意 agent 读取：<span class="mono">GET /v1/models</span>（Authorization: Bearer client.token）→
+        <span class="mono">context_length</span> / <span class="mono">max_completion_tokens</span> /
+        <span class="mono">architecture.input_modalities</span> / <span class="mono">supported_parameters</span>
+      </div>
+      <div id="catalogMsg" class="small" style="margin-top:8px"></div>
+      <div id="catalogList" style="margin-top:10px"></div>
+    </div>
+
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div>
@@ -150,7 +171,7 @@ th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regu
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null, wb: null, wbPoll: null, updatePoll: null, updateRestartChecks: 0 };
+const state = { token: localStorage.getItem("gw_admin_token") || "", data: null, update: null, wb: null, catalog: null, catalogShow: {}, wbPoll: null, updatePoll: null, updateRestartChecks: 0 };
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fmtBalance(v){return v===null||v===undefined?"—":Number(v).toLocaleString();}
@@ -211,6 +232,139 @@ function render(){
       $("updateMsg").textContent = u.available ? "发现新版本，可安装（服务会短暂重启）" : "已是最新版本";
     }
   }
+}
+
+function catSay(cls,text){ $("catalogMsg").className=cls+" small"; $("catalogMsg").textContent=text; }
+function catNum(v){ const n=Number(v); return Number.isFinite(n)&&n>0 ? Math.floor(n) : 0; }
+function catSources(meta){
+  const s=(meta&&meta.sources)||{};
+  const parts=[];
+  if(s.context) parts.push("ctx:"+s.context);
+  if(s.maxOutput) parts.push("out:"+s.maxOutput);
+  if(s.reasoning) parts.push("reason:"+s.reasoning);
+  if(s.image) parts.push("img:"+s.image);
+  return parts.length ? `<div class="muted small">${esc(parts.join(" · "))}</div>` : "";
+}
+function catRow(p,m){
+  const meta=m.meta||{};
+  let status="";
+  if(m.configured && !m.upstream) status='<span class="tag warn">上游已移除</span>';
+  else if(!m.configured && m.upstream) status='<span class="tag ok">新增</span>';
+  return `<tr data-p="${esc(p.id)}" data-m="${esc(m.id)}" data-upstream="${m.upstream?1:0}" data-configured="${m.configured?1:0}">
+    <td><input type="checkbox" class="cat-sel" ${m.configured?"checked":""}></td>
+    <td class="mono">${esc(m.id)} ${status}${m.name?`<div class="muted small">${esc(m.name)}</div>`:""}${catSources(meta)}</td>
+    <td><input type="number" class="cat-ctx" min="0" value="${meta.context||""}" placeholder="—" style="width:100px"></td>
+    <td><input type="number" class="cat-out" min="0" value="${meta.maxOutput||""}" placeholder="—" style="width:100px"></td>
+    <td style="text-align:center"><input type="checkbox" class="cat-reason" ${meta.reasoning?"checked":""}></td>
+    <td><input class="cat-levels" value="${esc((meta.reasoningLevels||[]).join(","))}" placeholder="low,high" style="width:110px"><input class="cat-param" value="${esc(meta.reasoningParam||"")}" placeholder="reasoning_effort" style="width:130px;margin-top:4px"></td>
+    <td style="text-align:center"><input type="checkbox" class="cat-image" ${meta.image?"checked":""}></td>
+  </tr>`;
+}
+function renderCatalog(){
+  const list=(state.catalog&&state.catalog.providers)||[];
+  if(!list.length){ $("catalogList").innerHTML='<div class="muted small">没有服务商</div>'; return; }
+  $("catalogList").innerHTML=list.map(p=>{
+    const rows=p.models||[];
+    const configured=rows.filter(m=>m.configured);
+    const added=rows.filter(m=>!m.configured&&m.upstream);
+    const showAll=!!state.catalogShow[p.id];
+    const shown=configured.concat(showAll?added:added.slice(0,30));
+    const upstreamCount=rows.filter(m=>m.upstream).length;
+    return `<div class="card" style="background:#12151b;margin-bottom:10px">
+      <div class="row" style="justify-content:space-between">
+        <div><b>${esc(p.label||p.id)}</b> <span class="muted small">${esc(p.id)}</span>
+          <span class="muted small">已配置 ${configured.length}${p.fetched?` · 上游 ${upstreamCount} · 可新增 ${added.length}`:""}</span>
+          ${p.error?`<div class="err small">${esc(p.error)}</div>`:""}
+        </div>
+        <div class="row">
+          ${added.length>30?`<button class="small" data-cat-show="${esc(p.id)}">${showAll?"收起新增":"显示全部新增 ("+added.length+")"}</button>`:""}
+          ${added.length?`<button class="small" data-cat-add="${esc(p.id)}">勾选全部新增</button>`:""}
+          <button class="small" data-cat-check="${esc(p.id)}">检查此平台</button>
+        </div>
+      </div>
+      <table style="margin-top:8px">
+        <thead><tr><th>启用</th><th>模型 / 来源</th><th>上下文</th><th>最大输出</th><th>推理</th><th>思考档位 / 参数</th><th>图片</th></tr></thead>
+        <tbody>${shown.map(m=>catRow(p,m)).join("")||'<tr><td colspan="7" class="muted">没有模型</td></tr>'}</tbody>
+      </table>
+      ${added.length>shown.length-configured.length?`<div class="muted small" style="margin-top:6px">仅显示前 30 个新增模型，点「显示全部新增」查看其余 ${added.length-30} 个</div>`:""}
+    </div>`;
+  }).join("");
+  document.querySelectorAll("[data-cat-show]").forEach(b=>b.onclick=()=>{
+    state.catalogShow[b.dataset.catShow]=!state.catalogShow[b.dataset.catShow]; renderCatalog();
+  });
+  document.querySelectorAll("[data-cat-add]").forEach(b=>b.onclick=()=>{
+    state.catalogShow[b.dataset.catAdd]=true;
+    renderCatalog();
+    document.querySelectorAll(`#catalogList tr[data-p="${b.dataset.catAdd}"][data-upstream="1"][data-configured="0"] .cat-sel`)
+      .forEach(el=>{ el.checked=true; });
+  });
+  document.querySelectorAll("[data-cat-check]").forEach(b=>b.onclick=()=>checkCatalog(b.dataset.catCheck));
+  $("catalogApplyBtn").disabled=false;
+}
+async function loadCatalog(){
+  try{
+    const r=await api("/admin/api/model-catalog");
+    state.catalog=r; renderCatalog();
+  }catch(e){ catSay("err","读取模型目录失败："+e.message); }
+}
+async function checkCatalog(provider){
+  const btn=provider?null:$("catalogCheckBtn");
+  if(btn) btn.disabled=true;
+  catSay("muted", provider?`正在检查 ${provider} 的上游模型…`:"正在读取各平台模型列表与元数据…");
+  try{
+    const r=await api("/admin/api/model-catalog/check",{method:"POST",body:JSON.stringify({provider:provider||"",overwrite:$("catalogOverwrite").checked})});
+    if(provider){
+      const next=(state.catalog&&state.catalog.providers)||[];
+      const found=(r.providers||[])[0];
+      state.catalog={ok:true,providers:next.map(p=>found&&p.id===found.id?found:p)};
+      if(found&&!next.some(p=>p.id===found.id)) state.catalog.providers.push(found);
+      state.catalogShow[provider]=false;
+    }else{
+      state.catalog=r; state.catalogShow={};
+    }
+    renderCatalog();
+    const errs=(r.providers||[]).filter(p=>p.error);
+    const detail=errs.length?`；读取失败：${errs.map(p=>`${p.label||p.id}（${p.error}）`).join("；")}`:"";
+    catSay(errs.length?"err":"ok",`检查完成：${(r.providers||[]).length} 个平台${detail} · models.dev ${r.modelsDev}`);
+  }catch(e){ catSay("err",e.message); }
+  finally{ if(btn) btn.disabled=false; }
+}
+async function applyCatalog(){
+  const providers={};
+  const metaLookup={};
+  ((state.catalog&&state.catalog.providers)||[]).forEach(p=>(p.models||[]).forEach(m=>{
+    metaLookup[p.id+"/"+m.id]=m.meta||{};
+  }));
+  document.querySelectorAll("#catalogList tr[data-p]").forEach(tr=>{
+    const pid=tr.dataset.p;
+    if(!(pid in providers)) providers[pid]={models:[],meta:{}};
+    if(!tr.querySelector(".cat-sel").checked) return;
+    const old=metaLookup[pid+"/"+tr.dataset.m]||{};
+    providers[pid].models.push(tr.dataset.m);
+    providers[pid].meta[tr.dataset.m]={
+      context:catNum(tr.querySelector(".cat-ctx").value),
+      maxOutput:catNum(tr.querySelector(".cat-out").value),
+      reasoning:tr.querySelector(".cat-reason").checked,
+      reasoningLevels:tr.querySelector(".cat-levels").value.split(",").map(s=>s.trim()).filter(Boolean),
+      reasoningParam:tr.querySelector(".cat-param").value.trim(),
+      image:tr.querySelector(".cat-image").checked,
+      sources:old.sources||{}
+    };
+  });
+  if(!Object.keys(providers).length){ catSay("err","没有可保存的模型"); return; }
+  for(const pid of Object.keys(providers)){
+    const prev=((state.catalog&&state.catalog.providers)||[]).find(p=>p.id===pid);
+    const prevCount=prev?((prev.models||[]).filter(m=>m.configured).length):0;
+    if(prevCount>0 && providers[pid].models.length===0 && !confirm(`${pid} 将移除全部 ${prevCount} 个已配置模型，确定？`)) return;
+  }
+  $("catalogApplyBtn").disabled=true;
+  catSay("muted","正在保存模型目录…");
+  try{
+    const r=await api("/admin/api/model-catalog/apply",{method:"POST",body:JSON.stringify({providers})});
+    state.catalog=r; renderCatalog();
+    catSay("ok","已保存，/v1/models 已即时生效");
+  }catch(e){ catSay("err",e.message); }
+  finally{ $("catalogApplyBtn").disabled=false; }
 }
 
 function wbTag(a){
@@ -346,6 +500,7 @@ async function load(){
   const d = await api("/admin/api/status");
   state.data = d; $("tokenBox").classList.add("hidden"); $("main").classList.remove("hidden"); render();
   await loadWB();
+  await loadCatalog();
   await loadUpdateProgress();
 }
 
@@ -525,6 +680,8 @@ $("exportBtn").onclick=async()=>{
   }catch(e){ alert(e.message); }
 };
 $("addBtn").onclick=addKey;
+$("catalogCheckBtn").onclick=()=>checkCatalog("");
+$("catalogApplyBtn").onclick=applyCatalog;
 $("toolsBtn").onclick=()=>{ location.href="/admin/tools"; };
 $("checkUpdateBtn").onclick=checkUpdate;
 $("applyUpdateBtn").onclick=applyUpdate;

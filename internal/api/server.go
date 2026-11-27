@@ -17,8 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,6 +101,12 @@ type Server struct {
 	wb       *workbuddy.Manager
 	wbClient *http.Client
 	ms       *modelscope.Manager
+
+	modelsMu sync.RWMutex
+	mdMu     sync.Mutex
+	mdIndex  map[string][]mdHit
+	mdAt     time.Time
+	mdErr    string
 }
 
 func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *Server {
@@ -142,6 +150,7 @@ func New(cfg *config.Config, r *router.Router, log *logx.Logger, opts Options) *
 		s.clientTok = cfg.ClientToken
 	}
 	s.startedAt = s.started.UTC().Format(time.RFC3339)
+	s.loadCatalog()
 	_ = max
 	return s
 }
@@ -303,21 +312,38 @@ func (s *Server) handleUnified(w http.ResponseWriter, r *http.Request, requestID
 }
 
 func (s *Server) writeModels(w http.ResponseWriter, provider string, unified bool) int {
-	type item struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int    `json:"created"`
-		OwnedBy string `json:"owned_by"`
-	}
-	var data []item
+	data := make([]map[string]any, 0)
 	if unified {
-		for _, m := range s.cfg.UnifiedModels() {
-			data = append(data, item{ID: m["id"], Object: "model", OwnedBy: m["provider"]})
+		for _, p := range s.snapshotProviders() {
+			for _, m := range p.Models {
+				data = append(data, modelJSON(p.ID+"/"+m, p.ID, p.Meta[m], ""))
+			}
+		}
+		type alias struct{ name, target string }
+		aliases := make([]alias, 0, len(s.cfg.Aliases))
+		for name, target := range s.cfg.Aliases {
+			aliases = append(aliases, alias{name: name, target: target})
+		}
+		sort.Slice(aliases, func(i, j int) bool { return aliases[i].name < aliases[j].name })
+		for _, a := range aliases {
+			pid, model := a.target, ""
+			if i := strings.Index(a.target, "/"); i > 0 {
+				pid, model = a.target[:i], a.target[i+1:]
+			}
+			var meta *config.ModelMeta
+			if p, ok := s.snapshotProvider(pid); ok {
+				meta = p.Meta[model]
+			}
+			data = append(data, modelJSON(a.name, pid, meta, a.target))
 		}
 	} else {
-		models, _ := s.cfg.ProviderModels(provider)
-		for _, m := range models {
-			data = append(data, item{ID: m, Object: "model", OwnedBy: provider})
+		p, ok := s.snapshotProvider(provider)
+		if !ok {
+			writeError(w, http.StatusNotFound, "未知 provider: "+provider, "invalid_request_error", "provider_not_found", "")
+			return http.StatusNotFound
+		}
+		for _, m := range p.Models {
+			data = append(data, modelJSON(m, provider, p.Meta[m], ""))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
@@ -794,6 +820,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request, requestID, 
 			return http.StatusMethodNotAllowed
 		}
 		return s.handleImportKeys(w, r, requestID)
+	case "/admin/api/model-catalog":
+		return s.handleCatalogGet(w, r)
+	case "/admin/api/model-catalog/check":
+		return s.handleCatalogCheck(w, r, requestID)
+	case "/admin/api/model-catalog/apply":
+		return s.handleCatalogApply(w, r, requestID)
 	case "/admin/api/update/check":
 		if s.update == nil || !s.update.Enabled() {
 			writeError(w, http.StatusBadRequest, "自动更新未启用", "invalid_request_error", "update_disabled", requestID)

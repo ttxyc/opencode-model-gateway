@@ -17,11 +17,42 @@ const (
 )
 
 type Provider struct {
-	ID      string   `json:"-"`
-	Label   string   `json:"label"`
-	BaseURL string   `json:"baseURL"`
-	Models  []string `json:"models"`
-	Kind    string   `json:"kind,omitempty"`
+	ID        string                `json:"-"`
+	Label     string                `json:"label"`
+	BaseURL   string                `json:"baseURL"`
+	Models    []string              `json:"models"`
+	Kind      string                `json:"kind,omitempty"`
+	ModelMeta map[string]*ModelMeta `json:"modelMeta,omitempty"`
+}
+
+// ModelMeta is the per-model capability sheet the gateway publishes through
+// /v1/models so agents no longer have to guess context size, reasoning support
+// or image input. Sources records where each field came from (upstream,
+// models.dev or manual); a false bool is only meaningful when its source is set.
+type ModelMeta struct {
+	Context         int64             `json:"context,omitempty"`
+	MaxOutput       int64             `json:"maxOutput,omitempty"`
+	Reasoning       bool              `json:"reasoning,omitempty"`
+	ReasoningLevels []string          `json:"reasoningLevels,omitempty"`
+	ReasoningParam  string            `json:"reasoningParam,omitempty"`
+	Image           bool              `json:"image,omitempty"`
+	Sources         map[string]string `json:"sources,omitempty"`
+	UpdatedAt       string            `json:"updatedAt,omitempty"`
+}
+
+func (m *ModelMeta) Clone() *ModelMeta {
+	if m == nil {
+		return nil
+	}
+	c := *m
+	c.ReasoningLevels = append([]string(nil), m.ReasoningLevels...)
+	if m.Sources != nil {
+		c.Sources = make(map[string]string, len(m.Sources))
+		for k, v := range m.Sources {
+			c.Sources[k] = v
+		}
+	}
+	return &c
 }
 
 type Limits struct {
