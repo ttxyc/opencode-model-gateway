@@ -7,7 +7,7 @@
 <style>
 :root{--bg:#0f1115;--card:#171a21;--fg:#e7eaf0;--muted:#8b93a7;--line:#2a2f3a;--ok:#35c28a;--warn:#e0a33a;--bad:#e05c5c;--accent:#5b9dff}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.wrap{max-width:960px;margin:0 auto;padding:24px}
+.wrap{width:90%;margin:0 auto;padding:24px}
 h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin-bottom:18px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -16,7 +16,15 @@ button{background:#1d2430;cursor:pointer}button.primary{background:var(--accent)
 button.danger{background:#2a1618;border-color:#5a2a2e;color:#ffb4b4}
 button:disabled{opacity:.45;cursor:not-allowed}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}
-th{color:var(--muted);font-weight:500}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+th{color:var(--muted);font-weight:500}
+#catalogList table{min-width:1040px}
+#catalogList th{white-space:nowrap}
+#catalogList td{white-space:nowrap}
+#catalogList td:nth-child(2){white-space:normal;min-width:280px}
+#catalogList th:nth-child(1),#catalogList td:nth-child(1),#catalogList th:nth-child(5),#catalogList td:nth-child(5),#catalogList th:nth-child(7),#catalogList td:nth-child(7){width:52px;text-align:center}
+#catalogList th:nth-child(3),#catalogList td:nth-child(3),#catalogList th:nth-child(4),#catalogList td:nth-child(4){width:120px}
+#catalogList th:nth-child(6),#catalogList td:nth-child(6){width:270px}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
 .tag.ok{color:var(--ok);border-color:#1d5a40}.tag.bad{color:var(--bad);border-color:#5a2a2e}.tag.warn{color:var(--warn);border-color:#5a4720}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
@@ -248,7 +256,7 @@ function catSources(meta){
 function catRow(p,m){
   const meta=m.meta||{};
   let status="";
-  if(m.configured && !m.upstream) status='<span class="tag warn">上游已移除</span>';
+  if(m.configured && m.upstreamKnown && !m.upstream) status='<span class="tag warn">上游已移除</span>';
   else if(!m.configured && m.upstream) status='<span class="tag ok">新增</span>';
   return `<tr data-p="${esc(p.id)}" data-m="${esc(m.id)}" data-upstream="${m.upstream?1:0}" data-configured="${m.configured?1:0}">
     <td><input type="checkbox" class="cat-sel" ${m.configured?"checked":""}></td>
@@ -282,10 +290,10 @@ function renderCatalog(){
           <button class="small" data-cat-check="${esc(p.id)}" title="检查上游并自动移除上游已不存在的模型">检查此平台</button>
         </div>
       </div>
-      <table style="margin-top:8px">
+      <div style="overflow-x:auto"><table style="margin-top:8px">
         <thead><tr><th>启用</th><th>模型 / 来源</th><th>上下文</th><th>最大输出</th><th>推理</th><th>思考档位 / 参数</th><th>图片</th></tr></thead>
         <tbody>${shown.map(m=>catRow(p,m)).join("")||'<tr><td colspan="7" class="muted">没有已启用模型</td></tr>'}</tbody>
-      </table>
+      </table></div>
       ${added.length&&!showAll?`<div class="muted small" style="margin-top:6px">已收起 ${added.length} 个未启用模型</div>`:""}
     </div>`;
   }).join("");

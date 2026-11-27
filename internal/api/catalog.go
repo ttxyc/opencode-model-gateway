@@ -45,11 +45,12 @@ type providerSnapshot struct {
 }
 
 type catalogModel struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name,omitempty"`
-	Configured bool              `json:"configured"`
-	Upstream   bool              `json:"upstream"`
-	Meta       *config.ModelMeta `json:"meta,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name,omitempty"`
+	Configured    bool              `json:"configured"`
+	Upstream      bool              `json:"upstream"`
+	UpstreamKnown bool              `json:"upstreamKnown,omitempty"`
+	Meta          *config.ModelMeta `json:"meta,omitempty"`
 }
 
 type catalogProvider struct {
@@ -306,6 +307,7 @@ func (s *Server) buildCatalogProvider(ctx context.Context, p providerSnapshot, i
 	} else {
 		cp.Fetched = true
 	}
+	upstreamKnown := cp.Fetched && len(upstream) > 0
 
 	enrich := func(id string, base *config.ModelMeta) (*config.ModelMeta, string) {
 		det := upstream[id]
@@ -331,7 +333,7 @@ func (s *Server) buildCatalogProvider(ctx context.Context, p providerSnapshot, i
 		seen[id] = true
 		meta, name := enrich(id, p.Meta[id])
 		_, isUpstream := upstream[id]
-		cp.Models = append(cp.Models, catalogModel{ID: id, Name: name, Configured: true, Upstream: isUpstream, Meta: meta})
+		cp.Models = append(cp.Models, catalogModel{ID: id, Name: name, Configured: true, Upstream: isUpstream, UpstreamKnown: isUpstream || upstreamKnown, Meta: meta})
 	}
 	extra := make([]string, 0)
 	for id := range upstream {
@@ -342,7 +344,7 @@ func (s *Server) buildCatalogProvider(ctx context.Context, p providerSnapshot, i
 	sort.Strings(extra)
 	for _, id := range extra {
 		meta, name := enrich(id, nil)
-		cp.Models = append(cp.Models, catalogModel{ID: id, Name: name, Upstream: true, Meta: meta})
+		cp.Models = append(cp.Models, catalogModel{ID: id, Name: name, Upstream: true, UpstreamKnown: true, Meta: meta})
 	}
 	return cp
 }
@@ -687,15 +689,38 @@ func mergeDetectedMeta(base *config.ModelMeta, det detectedMeta, overwrite bool)
 	apply("context", det.Fields["context"] && det.Meta.Context > 0, func() { out.Context = det.Meta.Context })
 	apply("maxOutput", det.Fields["maxOutput"] && det.Meta.MaxOutput > 0, func() { out.MaxOutput = det.Meta.MaxOutput })
 	apply("image", det.Fields["image"], func() { out.Image = det.Meta.Image })
-	apply("reasoning", det.Fields["reasoning"], func() {
-		out.Reasoning = det.Meta.Reasoning
-		if len(det.Meta.ReasoningLevels) > 0 {
-			out.ReasoningLevels = append([]string(nil), det.Meta.ReasoningLevels...)
+	if det.Fields["reasoning"] {
+		if !metaFieldKnown(out, "reasoning") || overwrite {
+			apply("reasoning", true, func() {
+				out.Reasoning = det.Meta.Reasoning
+				if len(det.Meta.ReasoningLevels) > 0 {
+					out.ReasoningLevels = cloneStrings(det.Meta.ReasoningLevels)
+				}
+				if det.Meta.ReasoningParam != "" {
+					out.ReasoningParam = det.Meta.ReasoningParam
+				}
+			})
+		} else if out.Reasoning && det.Meta.Reasoning {
+			// Upstream may only say "reasoning: true" while models.dev carries
+			// the effort levels for the same model. Fill the missing pieces
+			// without changing the already-known supports-reasoning flag.
+			filled := false
+			if len(out.ReasoningLevels) == 0 && len(det.Meta.ReasoningLevels) > 0 {
+				out.ReasoningLevels = cloneStrings(det.Meta.ReasoningLevels)
+				filled = true
+			}
+			if out.ReasoningParam == "" && det.Meta.ReasoningParam != "" {
+				out.ReasoningParam = det.Meta.ReasoningParam
+				filled = true
+			}
+			if filled {
+				if src := det.Meta.Sources["reasoning"]; src != "" {
+					out.Sources["reasoning"] = src
+				}
+				changed = true
+			}
 		}
-		if det.Meta.ReasoningParam != "" {
-			out.ReasoningParam = det.Meta.ReasoningParam
-		}
-	})
+	}
 	if changed {
 		out.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -745,10 +770,25 @@ func mergeDetected(dst *detectedMeta, src detectedMeta) {
 			dst.Meta.MaxOutput = src.Meta.MaxOutput
 		case "reasoning":
 			dst.Meta.Reasoning = src.Meta.Reasoning
-			dst.Meta.ReasoningLevels = append([]string(nil), src.Meta.ReasoningLevels...)
+			dst.Meta.ReasoningLevels = cloneStrings(src.Meta.ReasoningLevels)
 			dst.Meta.ReasoningParam = src.Meta.ReasoningParam
 		case "image":
 			dst.Meta.Image = src.Meta.Image
+		}
+	}
+	// Both sources may know "reasoning: true", but only one may carry the
+	// effort list. Merge levels/param even when the boolean is already known.
+	if src.Fields["reasoning"] && dst.Fields["reasoning"] && dst.Meta.Reasoning && src.Meta.Reasoning {
+		if len(dst.Meta.ReasoningLevels) == 0 && len(src.Meta.ReasoningLevels) > 0 {
+			dst.Meta.ReasoningLevels = cloneStrings(src.Meta.ReasoningLevels)
+			if dst.Meta.ReasoningParam == "" {
+				dst.Meta.ReasoningParam = src.Meta.ReasoningParam
+			}
+			if s := src.Meta.Sources["reasoning"]; s != "" {
+				dst.Meta.Sources["reasoning"] = s
+			}
+		} else if dst.Meta.ReasoningParam == "" && src.Meta.ReasoningParam != "" {
+			dst.Meta.ReasoningParam = src.Meta.ReasoningParam
 		}
 	}
 }
@@ -774,8 +814,27 @@ func detectWorkBuddyModel(m workbuddy.ModelInfo) detectedMeta {
 	det.Fields["image"] = true
 	if m.Reasoning != nil {
 		det.Meta.Reasoning = true
+		det.Meta.ReasoningParam = "reasoning_effort"
 		if b, ok := m.Reasoning.(bool); ok {
 			det.Meta.Reasoning = b
+			if !b {
+				det.Meta.ReasoningParam = ""
+			}
+		} else if obj, ok := m.Reasoning.(map[string]any); ok {
+			// WorkBuddy /v3/config returns:
+			// {"supportedEfforts":["low","high","max"],"defaultEffort":"high",...}
+			// Older/fixed-effort models only expose {"effort":"medium"}.
+			if efforts, ok := asStringList(obj["supportedEfforts"]); ok {
+				det.Meta.ReasoningLevels = normalizeStringList(efforts)
+			}
+			if len(det.Meta.ReasoningLevels) == 0 {
+				if effort, ok := obj["effort"].(string); ok {
+					effort = strings.ToLower(strings.TrimSpace(effort))
+					if effort != "" {
+						det.Meta.ReasoningLevels = []string{effort}
+					}
+				}
+			}
 		}
 		det.Meta.Sources["reasoning"] = "workbuddy"
 		det.Fields["reasoning"] = true

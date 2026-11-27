@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ttxyc/opencode-model-gateway/internal/config"
+	"github.com/ttxyc/opencode-model-gateway/internal/workbuddy"
 )
 
 func TestDetectOpenAIModel(t *testing.T) {
@@ -91,10 +92,87 @@ func TestNormalizeAndMatchMarket(t *testing.T) {
 	}
 }
 
+func TestDetectWorkBuddyReasoning(t *testing.T) {
+	det := detectWorkBuddyModel(workbuddy.ModelInfo{
+		ID: "deepseek-v4.1-flash", ContextWindow: 1000000, MaxTokens: 128000, SupportsImages: true,
+		Reasoning: map[string]any{
+			"canDisableThinking": true,
+			"defaultEffort":      "high",
+			"supportedEfforts":   []any{"low", "high", "max"},
+		},
+	})
+	if !det.Meta.Reasoning || det.Meta.ReasoningParam != "reasoning_effort" {
+		t.Fatalf("reasoning %+v", det.Meta)
+	}
+	if strings.Join(det.Meta.ReasoningLevels, ",") != "low,high,max" {
+		t.Fatalf("levels %+v", det.Meta.ReasoningLevels)
+	}
+	if det.Meta.Sources["reasoning"] != "workbuddy" {
+		t.Fatalf("source %+v", det.Meta.Sources)
+	}
+
+	fixed := detectWorkBuddyModel(workbuddy.ModelInfo{Reasoning: map[string]any{"effort": "medium"}})
+	if strings.Join(fixed.Meta.ReasoningLevels, ",") != "medium" || fixed.Meta.ReasoningParam != "reasoning_effort" {
+		t.Fatalf("fixed effort %+v", fixed.Meta)
+	}
+	off := detectWorkBuddyModel(workbuddy.ModelInfo{Reasoning: false})
+	if off.Meta.Reasoning || off.Meta.ReasoningParam != "" {
+		t.Fatalf("reasoning false %+v", off.Meta)
+	}
+}
+
 func TestCleanErrorText(t *testing.T) {
 	got := cleanErrorText("<html>\n<head><title>503 Service</title></head><body><h1>Unavailable</h1></body></html>")
 	if strings.Contains(got, "<") || strings.Contains(got, "\n") || !strings.Contains(got, "503 Service") {
 		t.Fatalf("clean %q", got)
+	}
+}
+
+func TestMergeDetectedReasoningLevels(t *testing.T) {
+	dst := detectedMeta{
+		Fields: map[string]bool{"reasoning": true},
+		Meta: config.ModelMeta{
+			Reasoning: true, ReasoningParam: "reasoning_effort",
+			Sources: map[string]string{"reasoning": "upstream"},
+		},
+	}
+	src := detectedMeta{
+		Fields: map[string]bool{"reasoning": true},
+		Meta: config.ModelMeta{
+			Reasoning: true, ReasoningLevels: []string{"low", "high", "max"}, ReasoningParam: "reasoning_effort",
+			Sources: map[string]string{"reasoning": "models.dev:amd"},
+		},
+	}
+	mergeDetected(&dst, src)
+	if strings.Join(dst.Meta.ReasoningLevels, ",") != "low,high,max" {
+		t.Fatalf("levels %+v", dst.Meta.ReasoningLevels)
+	}
+	if dst.Meta.Sources["reasoning"] != "models.dev:amd" {
+		t.Fatalf("source %+v", dst.Meta.Sources)
+	}
+}
+
+func TestMergeDetectedMetaFillsReasoningLevels(t *testing.T) {
+	det := detectedMeta{
+		Fields: map[string]bool{"reasoning": true},
+		Meta: config.ModelMeta{
+			Reasoning: true, ReasoningLevels: []string{"low", "high"}, ReasoningParam: "reasoning_effort",
+			Sources: map[string]string{"reasoning": "models.dev:amd"},
+		},
+	}
+	got := mergeDetectedMeta(&config.ModelMeta{
+		Reasoning: true, ReasoningParam: "reasoning_effort",
+		Sources: map[string]string{"reasoning": "upstream"},
+	}, det, false)
+	if strings.Join(got.ReasoningLevels, ",") != "low,high" {
+		t.Fatalf("levels %+v", got.ReasoningLevels)
+	}
+	kept := mergeDetectedMeta(&config.ModelMeta{
+		Reasoning: true, ReasoningLevels: []string{"low"},
+		Sources: map[string]string{"reasoning": "upstream"},
+	}, det, false)
+	if strings.Join(kept.ReasoningLevels, ",") != "low" {
+		t.Fatalf("existing levels overwritten: %+v", kept.ReasoningLevels)
 	}
 }
 
@@ -200,6 +278,27 @@ func TestCatalogApplyAndModelsMetadata(t *testing.T) {
 	}
 }
 
+func TestCatalogSnapshotUpstreamUnknown(t *testing.T) {
+	ts, _, cfg, _ := newTestServer(t)
+	code, out, _ := do(t, "GET", ts.URL+"/admin/api/model-catalog", cfg.AdminToken, "")
+	if code != 200 {
+		t.Fatalf("catalog %d %s", code, out)
+	}
+	var resp struct {
+		Providers []catalogProvider `json:"providers"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.Providers {
+		for _, m := range p.Models {
+			if m.UpstreamKnown || m.Upstream {
+				t.Fatalf("fresh catalog must not claim upstream status: %+v", m)
+			}
+		}
+	}
+}
+
 func TestCatalogEmptyModelsPersist(t *testing.T) {
 	ts, _, cfg, _ := newTestServer(t)
 	code, out, _ := do(t, "POST", ts.URL+"/admin/api/model-catalog/apply", cfg.AdminToken, `{"providers":{"deepseek":{"models":[]}}}`)
@@ -264,6 +363,9 @@ func TestCatalogCheckPrunesMissingModels(t *testing.T) {
 		if m.ID == "deepseek-v4-pro" {
 			t.Fatalf("removed model still in catalog: %+v", p.Models)
 		}
+		if m.ID == "deepseek-flash" && (!m.UpstreamKnown || !m.Upstream) {
+			t.Fatalf("retained model should be known upstream: %+v", m)
+		}
 	}
 	cfgModels := cfg.Providers["deepseek"].Models
 	if len(cfgModels) != 1 || cfgModels[0] != "deepseek-flash" {
@@ -315,6 +417,9 @@ func TestCatalogCheckFallsBackToModelsDev(t *testing.T) {
 	}
 	if found == nil || found.Meta == nil {
 		t.Fatalf("model %+v", p.Models)
+	}
+	if found.UpstreamKnown {
+		t.Fatalf("failed upstream fetch must not claim removed: %+v", found)
 	}
 	if found.Meta.Context != 1000000 || found.Meta.MaxOutput != 384000 || !found.Meta.Reasoning {
 		t.Fatalf("meta %+v", found.Meta)
