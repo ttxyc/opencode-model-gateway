@@ -84,6 +84,89 @@ func TestPrepareBodyNormalizesToolChoiceAndTokens(t *testing.T) {
 	}
 }
 
+const dshFileReferencePrompt = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host."
+
+func TestPrepareBodyRewritesKnownFingerprint(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"` + dshFileReferencePrompt + `"},{"role":"user","content":"hi"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := firstMessage(t, decode(t, out))["content"].(string)
+	if strings.Contains(content, "explicitly referenced") {
+		t.Fatalf("fingerprint not rewritten: %q", content)
+	}
+	if !strings.Contains(content, "paths the user explicitly mentioned") {
+		t.Fatalf("expected reworded sentence: %q", content)
+	}
+	// The rest of the instruction must survive intact.
+	if !strings.Contains(content, "Relative paths resolve from the workspace root") {
+		t.Fatalf("instruction lost: %q", content)
+	}
+}
+
+func TestPrepareBodyRewritesFingerprintInAssistantHistory(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"You are a helpful assistant."},` +
+		`{"role":"assistant","content":"` + dshFileReferencePrompt + `"},` +
+		`{"role":"user","content":"ok"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := decode(t, out)["messages"].([]any)
+	assistant, _ := msgs[1].(map[string]any)
+	if strings.Contains(assistant["content"].(string), "explicitly referenced") {
+		t.Fatalf("assistant fingerprint not rewritten: %v", assistant["content"])
+	}
+}
+
+func TestPrepareBodyLeavesUnscannedRolesAlone(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},` +
+		`{"role":"user","content":"` + dshFileReferencePrompt + `"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"` + dshFileReferencePrompt + `"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := decode(t, out)["messages"].([]any)
+	for _, idx := range []int{1, 3} {
+		msg, _ := msgs[idx].(map[string]any)
+		content, _ := msg["content"].(string)
+		if content != dshFileReferencePrompt {
+			t.Fatalf("role %v must stay byte-identical, got %q", msg["role"], content)
+		}
+	}
+}
+
+func TestPrepareBodyFingerprintRewriteIsIdempotent(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"` + dshFileReferencePrompt + `"},{"role":"user","content":"hi"}]}`)
+	out1, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := PrepareBody(out1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out1) != string(out2) {
+		t.Fatalf("not idempotent:\n%s\n%s", out1, out2)
+	}
+}
+
+func TestPrepareBodyLeavesCleanPromptByteIdentical(t *testing.T) {
+	clean := "You are a helpful assistant. Answer concisely."
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"` + clean + `"},{"role":"user","content":"hi"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := firstMessage(t, decode(t, out))["content"].(string)
+	if content != clean {
+		t.Fatalf("clean prompt changed: %q", content)
+	}
+}
+
 func TestNeutralizeBodyIsIdempotent(t *testing.T) {
 	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"You are opencode. Do work now."},{"role":"assistant","content":"Hello! More text."},{"role":"user","content":"hi"}]}`)
 	out1, err := NeutralizeBody(raw)
