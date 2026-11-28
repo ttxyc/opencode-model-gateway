@@ -55,6 +55,7 @@ func PrepareBody(raw []byte) ([]byte, error) {
 	forceStream(obj)
 	normalizeMaxTokens(obj)
 	normalizeToolChoice(obj)
+	normalizeRoles(obj)
 	rewriteIdentity(obj)
 	rewriteFingerprints(obj)
 	ensureSystemHead(obj)
@@ -174,6 +175,24 @@ func forEachMessage(obj map[string]any, fn func(map[string]any)) {
 			fn(msg)
 		}
 	}
+}
+
+// normalizeRoles maps the OpenAI `developer` role onto `system`.
+//
+// WHY: measured 2026-11-28, the upstream channel gate answers `11128 /
+// Illegal API invocation from an unapproved channel` for ANY request whose
+// system prompt uses `role: "developer"`, whatever the text. Clients that follow
+// the newer OpenAI convention (DeepSeek Harness / pi-ai sends `developer` to
+// reasoning models by default) therefore fail on every request.
+//
+// Multiple `system` messages are accepted by the upstream (measured), so a plain
+// role rename is enough -- no merging and no content rewrite.
+func normalizeRoles(obj map[string]any) {
+	forEachMessage(obj, func(msg map[string]any) {
+		if role, _ := msg["role"].(string); role == "developer" {
+			msg["role"] = "system"
+		}
+	})
 }
 
 func rewriteIdentity(obj map[string]any) {

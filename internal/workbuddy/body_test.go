@@ -167,6 +167,59 @@ func TestPrepareBodyLeavesCleanPromptByteIdentical(t *testing.T) {
 	}
 }
 
+func TestPrepareBodyMapsDeveloperRoleToSystem(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"developer","content":"You are a helpful assistant."},{"role":"user","content":"hi"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := decode(t, out)
+	msgs, _ := obj["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("expected no extra system head, got %d messages: %s", len(msgs), out)
+	}
+	if role := firstMessage(t, obj)["role"]; role != "system" {
+		t.Fatalf("developer role not mapped: %v", role)
+	}
+	if !strings.Contains(string(out), `"system"`) || strings.Contains(string(out), `"developer"`) {
+		t.Fatalf("unexpected roles in %s", out)
+	}
+}
+
+func TestPrepareBodyDeveloperRoleWithFingerprint(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"developer","content":"` + dshFileReferencePrompt + `"},{"role":"user","content":"hi"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _ := decode(t, out)["messages"].([]any)[0].(map[string]any)
+	if msg["role"] != "system" {
+		t.Fatalf("role = %v", msg["role"])
+	}
+	if content, _ := msg["content"].(string); strings.Contains(content, "explicitly referenced") {
+		t.Fatalf("fingerprint not rewritten: %q", content)
+	}
+}
+
+func TestPrepareBodyLeavesToolAndUserRolesAlone(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},` +
+		`{"role":"user","content":"u"},` +
+		`{"role":"tool","tool_call_id":"c1","content":"t"},` +
+		`{"role":"assistant","content":"a"}]}`)
+	out, err := PrepareBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := decode(t, out)["messages"].([]any)
+	want := []string{"system", "user", "tool", "assistant"}
+	for i, w := range want {
+		msg, _ := msgs[i].(map[string]any)
+		if msg["role"] != w {
+			t.Fatalf("message %d role = %v, want %s", i, msg["role"], w)
+		}
+	}
+}
+
 func TestNeutralizeBodyIsIdempotent(t *testing.T) {
 	raw := []byte(`{"model":"m","messages":[{"role":"system","content":"You are opencode. Do work now."},{"role":"assistant","content":"Hello! More text."},{"role":"user","content":"hi"}]}`)
 	out1, err := NeutralizeBody(raw)
