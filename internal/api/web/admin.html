@@ -265,7 +265,7 @@ function catRow(p,m){
     <td><input type="number" class="cat-out" min="0" value="${meta.maxOutput||""}" placeholder="—" style="width:100px"></td>
     <td style="text-align:center"><input type="checkbox" class="cat-reason" ${meta.reasoning?"checked":""}></td>
     <td><input class="cat-levels" value="${esc((meta.reasoningLevels||[]).join(","))}" placeholder="low,high" style="width:110px"><input class="cat-param" value="${esc(meta.reasoningParam||"")}" placeholder="reasoning_effort" style="width:130px;margin-top:4px"></td>
-    <td style="text-align:center"><input type="checkbox" class="cat-image" ${meta.image?"checked":""}></td>
+    <td style="text-align:center">${meta.image?'<span class="tag ok">支持</span>':'<span class="muted small">—</span>'}</td>
   </tr>`;
 }
 function renderCatalog(){
@@ -288,6 +288,7 @@ function renderCatalog(){
           ${added.length?`<button class="small" data-cat-show="${esc(p.id)}">${showAll?"收起全部":"展示全部（"+added.length+"）"}</button>`:""}
           ${added.length?`<button class="small" data-cat-add="${esc(p.id)}">勾选全部新增</button>`:""}
           <button class="small" data-cat-check="${esc(p.id)}" title="检查上游并自动移除上游已不存在的模型">检查此平台</button>
+          <button class="small primary" data-cat-save="${esc(p.id)}" title="把本平台勾选的模型与元数据写入网关配置">保存配置</button>
         </div>
       </div>
       <div style="overflow-x:auto"><table style="margin-top:8px">
@@ -307,6 +308,7 @@ function renderCatalog(){
       .forEach(el=>{ el.checked=true; });
   });
   document.querySelectorAll("[data-cat-check]").forEach(b=>b.onclick=()=>checkCatalog(b.dataset.catCheck));
+  document.querySelectorAll("[data-cat-save]").forEach(b=>b.onclick=()=>saveCatalogProvider(b.dataset.catSave));
   $("catalogApplyBtn").disabled=false;
 }
 async function loadCatalog(){
@@ -339,7 +341,7 @@ async function checkCatalog(provider){
   }catch(e){ catSay("err",e.message); }
   finally{ if(btn) btn.disabled=false; }
 }
-async function applyCatalog(){
+function collectCatalog(pidFilter){
   const providers={};
   const metaLookup={};
   ((state.catalog&&state.catalog.providers)||[]).forEach(p=>(p.models||[]).forEach(m=>{
@@ -347,6 +349,7 @@ async function applyCatalog(){
   }));
   document.querySelectorAll("#catalogList tr[data-p]").forEach(tr=>{
     const pid=tr.dataset.p;
+    if(pidFilter && pid!==pidFilter) return;
     if(!(pid in providers)) providers[pid]={models:[],meta:{}};
     if(!tr.querySelector(".cat-sel").checked) return;
     const old=metaLookup[pid+"/"+tr.dataset.m]||{};
@@ -357,24 +360,39 @@ async function applyCatalog(){
       reasoning:tr.querySelector(".cat-reason").checked,
       reasoningLevels:tr.querySelector(".cat-levels").value.split(",").map(s=>s.trim()).filter(Boolean),
       reasoningParam:tr.querySelector(".cat-param").value.trim(),
-      image:tr.querySelector(".cat-image").checked,
+      image:!!old.image,
       sources:old.sources||{}
     };
   });
-  if(!Object.keys(providers).length){ catSay("err","没有可保存的模型"); return; }
+  return providers;
+}
+function confirmEmptyCatalog(providers){
   for(const pid of Object.keys(providers)){
     const prev=((state.catalog&&state.catalog.providers)||[]).find(p=>p.id===pid);
     const prevCount=prev?((prev.models||[]).filter(m=>m.configured).length):0;
-    if(prevCount>0 && providers[pid].models.length===0 && !confirm(`${pid} 将移除全部 ${prevCount} 个已配置模型，确定？`)) return;
+    if(prevCount>0 && providers[pid].models.length===0 && !confirm(`${pid} 将移除全部 ${prevCount} 个已配置模型，确定？`)) return false;
   }
-  $("catalogApplyBtn").disabled=true;
+  return true;
+}
+async function saveProviders(providers, label){
+  if(!Object.keys(providers).length){ catSay("err","没有可保存的模型"); return; }
+  if(!confirmEmptyCatalog(providers)) return;
   catSay("muted","正在保存模型目录…");
   try{
     const r=await api("/admin/api/model-catalog/apply",{method:"POST",body:JSON.stringify({providers})});
     state.catalog=r; renderCatalog();
-    catSay("ok","已保存，/v1/models 已即时生效");
+    catSay("ok",`已保存${label?` ${label}`:""}，/v1/models 已即时生效`);
   }catch(e){ catSay("err",e.message); }
+}
+async function applyCatalog(){
+  $("catalogApplyBtn").disabled=true;
+  try{ await saveProviders(collectCatalog(), ""); }
   finally{ $("catalogApplyBtn").disabled=false; }
+}
+async function saveCatalogProvider(pid){
+  const p=((state.catalog&&state.catalog.providers)||[]).find(x=>x.id===pid);
+  const label=p?`${p.label||p.id}`:pid;
+  await saveProviders(collectCatalog(pid), label);
 }
 
 function wbTag(a){
